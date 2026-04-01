@@ -1,0 +1,211 @@
+<!DOCTYPE html>
+<html lang="fr">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>RBAC Governance Dashboard</title>
+  <script src="https://cdn.tailwindcss.com"></script>
+  <script src="https://cdn.jsdelivr.net/npm/chart.js@4.4.0/dist/chart.umd.min.js"></script>
+  <link rel="stylesheet" href="https://rsms.me/inter/inter.css">
+</head>
+<body class="min-h-screen bg-gray-50 font-sans antialiased">
+
+  <!-- Header -->
+  <header class="bg-white shadow-sm sticky top-0 z-50">
+    <div class="container mx-auto px-6 py-4 flex items-center justify-between">
+      <h1 class="text-xl font-bold text-indigo-600 flex items-center gap-2">
+        <svg class="w-8 h-8" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+          <path d="M9 12l2 2 4-4m5.618-4.016A11.955 11.955 0 0112 2.944a11.955 11.955 0 01-8.618 3.04A12.02 12.02 0 003 9c0 5.591 3.824 10.29 9 11.622 5.176-1.332 9-6.03 9-11.622 0-1.042-.133-2.052-.382-3.016z"></path>
+        </svg>
+        RBAC Governance Dashboard
+      </h1>
+      <div class="flex items-center gap-4">
+        <a href="/matrix?export=true" target="_blank" class="text-sm text-indigo-600 hover:text-indigo-700 flex items-center gap-1">
+          <svg class="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path d="M4 16v1a3 3 0 003 3h10a3 3 0 003-3v-1m-4-4l-4 4m0 0l-4-4m4 4V4"></path></svg>
+          Export JSON
+        </a>
+      </div>
+    </div>
+  </header>
+
+  <div class="container mx-auto px-6 py-8">
+
+    <!-- Stats Cards -->
+    <div id="stats" class="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-4 gap-6 mb-8">
+      <!-- Loading... -->
+      <div class="col-span-full bg-white rounded-xl shadow-sm p-6 text-center text-gray-500">
+        Chargement des données...
+      </div>
+    </div>
+
+    <!-- Charts Section -->
+    <div id="charts" class="grid grid-cols-1 lg:grid-cols-2 gap-6 mb-8">
+      <!-- Loading... -->
+      <div class="col-span-full bg-white rounded-xl shadow-sm p-6 text-center text-gray-500">
+        Chargement des graphiques...
+      </div>
+    </div>
+
+    <!-- Risk Assessment -->
+    <div id="risks" class="bg-white rounded-xl shadow-sm p-6 mb-8 hidden">
+      <h3 class="text-lg font-semibold text-gray-800 mb-4">Compliance Risks</h3>
+      <div id="risk-content"></div>
+    </div>
+
+    <!-- Matrix Table -->
+    <div id="matrix" class="bg-white rounded-xl shadow-sm overflow-hidden">
+      <div class="p-6 border-b">
+        <h3 class="text-lg font-semibold text-gray-800">Access Matrix</h3>
+      </div>
+      <div class="overflow-x-auto">
+        <table class="min-w-full divide-y divide-gray-200">
+          <thead class="bg-gray-50">
+            <tr>
+              <th class="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase">Group</th>
+              <th class="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase">Members</th>
+              <th class="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase">Roles</th>
+              <th class="px-6 py-3 text-center text-xs font-medium text-gray-500 uppercase">Data Access</th>
+            </tr>
+          </thead>
+          <tbody id="matrix-body" class="bg-white divide-y">
+            <!-- Loading... -->
+            <tr><td colspan="4" class="px-6 py-4 text-center text-gray-500">Chargement...</td></tr>
+          </tbody>
+        </table>
+      </div>
+    </div>
+
+  </div>
+
+  <!-- Fetch Data -->
+  <script>
+    const API_BASE = 'http://localhost:8010';
+
+    async function fetchMatrix() {
+      try {
+        const response = await fetch(`${API_BASE}/matrix`);
+        const data = await response.json();
+        console.log('Matrix:', data);
+        renderData(data);
+      } catch (error) {
+        console.error('Error:', error);
+        document.getElementById('stats').innerHTML = '<div class="col-span-full p-6 text-red-500">❌ Error: ' + error.message + '</div>';
+      }
+    }
+
+    function renderData(matrix) {
+      // Update stats
+      const totalGroups = matrix.length;
+      const totalMembers = matrix.reduce((sum, g) => sum + g.members_count, 0);
+      const dataAccessEnabled = matrix.filter(g => g.roles.some(r => r.data_access)).length;
+      
+      document.getElementById('stats').innerHTML = `
+        <div class="bg-white rounded-xl shadow-sm p-6">
+          <h3 class="text-sm font-semibold text-gray-700 mb-2">Total Groups</h3>
+          <div class="flex items-baseline gap-2">
+            <span class="text-3xl font-bold text-indigo-600">${totalGroups}</span>
+          </div>
+        </div>
+        <div class="bg-white rounded-xl shadow-sm p-6">
+          <h3 class="text-sm font-semibold text-gray-700 mb-2">Total Members</h3>
+          <div class="flex items-baseline gap-2">
+            <span class="text-3xl font-bold text-blue-600">${totalMembers}</span>
+          </div>
+        </div>
+        <div class="bg-white rounded-xl shadow-sm p-6">
+          <h3 class="text-sm font-semibold text-gray-700 mb-2">Data Access Enabled</h3>
+          <div class="flex items-baseline gap-2">
+            <span class="text-3xl font-bold text-green-600">${dataAccessEnabled}</span>
+          </div>
+        </div>
+      `;
+
+      // Update matrix table
+      const tbody = document.getElementById('matrix-body');
+      if (matrix.length === 0) {
+        tbody.innerHTML = '<tr><td colspan="4" class="px-6 py-4 text-center text-gray-500">No data available</td></tr>';
+      } else {
+        tbody.innerHTML = matrix.map(group => `
+          <tr key="${group.group_id}" class="hover:bg-gray-50">
+            <td class="px-6 py-4">
+              <div class="font-medium text-indigo-600">${group.display_name}</div>
+              <div class="text-sm text-gray-500">${group.group_id || 'N/A'}</div>
+            </td>
+            <td class="px-6 py-4 whitespace-nowrap text-sm text-gray-700">${group.members_count || 0}</td>
+            <td class="px-6 py-4">
+              ${group.roles?.map(role => `
+                <span
+                  key="${role.name}"
+                  class="inline-flex items-center px-2.5 py-0.5 rounded-full text-xs font-medium ${
+                    role.security_admin ? 'bg-red-100 text-red-800' :
+                    role.data_access ? 'bg-green-100 text-green-800' :
+                    'bg-gray-100 text-gray-800'
+                  }"
+                >
+                  ${role.name}
+                </span>
+              `).join('') || '<span class="text-gray-400">No roles</span>'}
+            </td>
+            <td class="px-6 py-4 text-center">
+              ${group.roles?.some(r => r.data_access) ? '<svg class="w-5 h-5 text-green-500" fill="currentColor" viewBox="0 0 20 20"><path fill-rule="evenodd" d="M16.707 5.293a1 1 0 010 1.414l-8 8a1 1 0 01-1.414 0l-4-4a1 1 0 011.414-1.414L8 12.586l7.293-7.293a1 1 0 011.414 0z" clip-rule="evenodd"></path></svg>' : '<svg class="w-5 h-5 text-gray-300" fill="currentColor" viewBox="0 0 20 20"><path fill-rule="evenodd" d="M4.293 4.293a1 1 0 011.414 0L10 8.586l4.293-4.293a1 1 0 111.414 1.414L11.414 10l4.293 4.293a1 1 0 01-1.414 1.414L10 11.414l-4.293 4.293a1 1 0 01-1.414-1.414L8.586 10 4.293 5.707a1 1 0 010-1.414z" clip-rule="evenodd"></path></svg>'}
+            </td>
+          </tr>
+        `).join('');
+      }
+
+      // Fetch and render risks
+      fetch(`${API_BASE}/risks`).then(res => res.json()).then(risks => {
+        if (risks && risks.risks) {
+          document.getElementById('risks').classList.remove('hidden');
+          document.getElementById('risk-content').innerHTML = risks.risks.map((risk, i) => `
+            <div class="flex items-start gap-3 p-4 rounded-lg ${
+              risk.risk_level === 'CRITICAL' ? 'bg-red-50 border border-red-200' :
+              risk.risk_level === 'HIGH' ? 'bg-orange-50 border border-orange-200' :
+              risk.risk_level === 'MEDIUM' ? 'bg-yellow-50 border border-yellow-200' :
+              'bg-blue-50 border border-blue-200'
+            }">
+              <div class="mt-1 w-2 h-2 rounded-full ${
+                risk.risk_level === 'CRITICAL' ? 'bg-red-500' :
+                risk.risk_level === 'HIGH' ? 'bg-orange-500' :
+                risk.risk_level === 'MEDIUM' ? 'bg-yellow-500' :
+                'bg-blue-500'
+              }"></div>
+              <div class="flex-1">
+                <p class="text-sm text-gray-800">${risk.description}</p>
+                <p class="text-xs text-gray-600 mt-1">${risk.group_id || 'N/A'} • ${risk.role || 'Unknown'}</p>
+              </div>
+            </div>
+          `).join('');
+        }
+      });
+
+      // Setup Chart.js pie chart
+      const ctx = document.getElementById('charts').getContext('2d');
+      new Chart(ctx, {
+        type: 'pie',
+        data: {
+          labels: matrix.map(g => g.display_name || 'Unknown'),
+          datasets: [{
+            data: matrix.map(g => g.members_count || 0),
+            backgroundColor: ['#6366f1', '#8b5cf6', '#ec4899', '#f43f5e'],
+            borderColor: '#fff',
+            borderWidth: 2
+          }]
+        },
+        options: {
+          responsive: true,
+          plugins: {
+            legend: { display: false }
+          }
+        }
+      });
+    }
+
+    // Fetch data on load
+    fetchMatrix();
+
+    // Auto-refresh every 30s
+    setInterval(fetchMatrix, 30000);
+  </script>
+</body>
+</html>

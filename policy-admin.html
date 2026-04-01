@@ -1,0 +1,148 @@
+<!doctype html>
+<html lang="fr">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>RBAC Policy Admin</title>
+  <script src="https://cdn.tailwindcss.com"></script>
+</head>
+<body class="min-h-screen bg-slate-50 text-slate-900">
+  <main class="mx-auto max-w-6xl p-6 space-y-4">
+    <h1 class="text-2xl font-bold text-indigo-700">Policy Administration</h1>
+    <p id="authInfo" class="text-sm text-slate-600"></p>
+
+    <section class="rounded-xl border border-slate-200 bg-white p-4 space-y-3">
+      <h2 class="font-semibold">Nomenclature dynamique</h2>
+      <div class="grid grid-cols-1 gap-3 md:grid-cols-2">
+        <input id="template" class="rounded border border-slate-300 px-3 py-2 text-sm" placeholder="Template (ex: AAD-{domain}-{purpose}-{env}-{access})" />
+        <input id="defaultDomain" class="rounded border border-slate-300 px-3 py-2 text-sm" placeholder="Default domain (ex: ENG)" />
+      </div>
+      <div class="grid grid-cols-1 gap-3 md:grid-cols-2">
+        <div>
+          <label class="mb-1 block text-xs font-semibold uppercase text-slate-500">Variables (JSON array)</label>
+          <textarea id="variablesJson" class="h-48 w-full rounded border border-slate-300 p-2 font-mono text-xs"></textarea>
+        </div>
+        <div>
+          <label class="mb-1 block text-xs font-semibold uppercase text-slate-500">Domaines (JSON object)</label>
+          <textarea id="domainsJson" class="h-48 w-full rounded border border-slate-300 p-2 font-mono text-xs"></textarea>
+        </div>
+      </div>
+      <div class="flex gap-2">
+        <button id="loadBtn" class="rounded bg-slate-800 px-3 py-2 text-sm text-white">Load</button>
+        <button id="saveBtn" class="rounded bg-indigo-600 px-3 py-2 text-sm text-white">Save Naming Policy</button>
+        <a href="/group-designer.html" class="rounded border border-slate-300 px-3 py-2 text-sm">Open User Designer</a>
+      </div>
+      <p id="status" class="text-sm text-slate-600"></p>
+    </section>
+
+    <section class="rounded-xl border border-slate-200 bg-white p-4 space-y-2">
+      <h2 class="font-semibold">Policy JSON complète</h2>
+      <textarea id="policyBox" class="h-[380px] w-full rounded border border-slate-300 p-3 font-mono text-xs"></textarea>
+      <button id="saveRawBtn" class="rounded border border-slate-300 px-3 py-2 text-sm">Save Full JSON</button>
+    </section>
+  </main>
+
+  <script>
+    const api = '/api';
+    let currentPolicy = null;
+
+    const statusEl = document.getElementById('status');
+    const authInfoEl = document.getElementById('authInfo');
+    const policyBox = document.getElementById('policyBox');
+
+    function setStatus(msg, err = false) {
+      statusEl.textContent = msg;
+      statusEl.className = err ? 'text-sm text-red-700' : 'text-sm text-slate-600';
+    }
+
+    function hydrateForm(policy) {
+      const naming = policy.naming || {};
+      const routing = policy.domain_routing || {};
+      document.getElementById('template').value = naming.template || '';
+      document.getElementById('defaultDomain').value = routing.default_domain || '';
+      document.getElementById('variablesJson').value = JSON.stringify(naming.variables || [], null, 2);
+      document.getElementById('domainsJson').value = JSON.stringify(naming.domains || {}, null, 2);
+      policyBox.value = JSON.stringify(policy, null, 2);
+    }
+
+    function collectNamingPatch() {
+      const template = document.getElementById('template').value.trim();
+      const defaultDomain = document.getElementById('defaultDomain').value.trim().toUpperCase();
+      const variables = JSON.parse(document.getElementById('variablesJson').value || '[]');
+      const domains = JSON.parse(document.getElementById('domainsJson').value || '{}');
+      return {
+        naming: { template, variables, domains },
+        domain_routing: {
+          ...(currentPolicy?.domain_routing || {}),
+          default_domain: defaultDomain,
+          allowed_domains: Object.keys(domains),
+        },
+      };
+    }
+
+    async function authCheck() {
+      try {
+        const res = await fetch(`${api}/auth/me`);
+        const body = await res.json();
+        const ctx = body.context || {};
+        authInfoEl.textContent = `User: ${ctx.user || 'anonymous'} | Role: ${ctx.role || 'none'} | Groups: ${(ctx.groups || []).join(', ') || '(none)'}`;
+        if (ctx.role !== 'admin') {
+          setStatus('Mode lecture seule: rôle admin requis pour modifier la policy.', true);
+          document.getElementById('saveBtn').disabled = true;
+          document.getElementById('saveRawBtn').disabled = true;
+        }
+      } catch {
+        authInfoEl.textContent = 'Auth context unavailable';
+      }
+    }
+
+    async function loadPolicy() {
+      try {
+        const res = await fetch(`${api}/policy`);
+        const body = await res.json();
+        if (!res.ok) throw new Error(body.detail || 'load failed');
+        currentPolicy = body.policy;
+        hydrateForm(currentPolicy);
+        setStatus('Policy loaded');
+      } catch (e) {
+        setStatus(`Load error: ${e.message}`, true);
+      }
+    }
+
+    async function savePatch(patch) {
+      const res = await fetch(`${api}/policy`, {
+        method: 'PUT',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(patch),
+      });
+      const body = await res.json();
+      if (!res.ok) throw new Error(body.detail || 'save failed');
+      currentPolicy = body.policy;
+      hydrateForm(currentPolicy);
+      setStatus('Policy saved');
+    }
+
+    document.getElementById('loadBtn').addEventListener('click', loadPolicy);
+    document.getElementById('saveBtn').addEventListener('click', async () => {
+      try {
+        const patch = collectNamingPatch();
+        await savePatch(patch);
+      } catch (e) {
+        setStatus(`Save error: ${e.message}`, true);
+      }
+    });
+
+    document.getElementById('saveRawBtn').addEventListener('click', async () => {
+      try {
+        const parsed = JSON.parse(policyBox.value);
+        await savePatch(parsed);
+      } catch (e) {
+        setStatus(`Raw save error: ${e.message}`, true);
+      }
+    });
+
+    authCheck();
+    loadPolicy();
+  </script>
+</body>
+</html>

@@ -1,0 +1,482 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Group Configuration - RBAC Auditor</title>
+  <script src="https://cdn.tailwindcss.com"></script>
+  <link rel="stylesheet" href="https://rsms.me/inter/inter.css">
+  <script src="https://cdn.jsdelivr.net/npm/chart.js@4.4.0/dist/chart.umd.min.js"></script>
+</head>
+<body class="min-h-screen bg-gray-50 font-sans antialiased">
+
+  <!-- Header -->
+  <header class="bg-white shadow-sm sticky top-0 z-50">
+    <div class="container mx-auto px-6 py-4 flex items-center justify-between">
+      <h1 class="text-xl font-bold text-indigo-600 flex items-center gap-2">
+        <svg class="w-8 h-8" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path d="M9 12l2 2 4-4m5.618-4.016A11.955 11.955 0 0112 2.944a11.955 11.955 0 01-8.618 3.04A12.02 12.02 0 003 9c0 5.591 3.824 10.29 9 11.622 5.176-1.332 9-6.03 9-11.622 0-1.042-.133-2.052-.382-3.016z"/></svg>
+        Group Configuration
+      </h1>
+    </div>
+  </header>
+
+  <div class="container mx-auto px-6 py-8">
+
+    <!-- Step Indicator -->
+    <div class="mb-8">
+      <div class="flex items-center justify-between max-w-3xl mx-auto">
+        <div class="flex-1 text-center">
+          <div id="step1-indicator" class="w-10 h-10 rounded-full bg-indigo-600 text-white flex items-center justify-center font-bold">1</div>
+          <p class="text-xs text-gray-500 mt-2">Configure Groups</p>
+        </div>
+        <div class="flex-1 text-center">
+          <div id="step2-indicator" class="w-10 h-10 rounded-full bg-gray-300 text-gray-600 flex items-center justify-center font-bold">2</div>
+          <p class="text-xs text-gray-500 mt-2">Map Roles</p>
+        </div>
+        <div class="flex-1 text-center">
+          <div id="step3-indicator" class="w-10 h-10 rounded-full bg-gray-300 text-gray-600 flex items-center justify-center font-bold">3</div>
+          <p class="text-xs text-gray-500 mt-2">Apply Rules</p>
+        </div>
+      </div>
+    </div>
+
+    <!-- Step 1: Groups Configuration -->
+    <div id="step1" class="bg-white rounded-xl shadow-sm p-6 mb-8">
+      <h2 class="text-lg font-semibold text-gray-800 mb-4">Step 1: Configure Your AAD Groups</h2>
+      
+      <!-- Import Options -->
+      <div class="mb-6">
+        <p class="text-sm text-gray-600 mb-3">Import your Azure AD groups via:</p>
+        <div class="flex gap-4">
+          <button id="btn-csv" class="flex-1 bg-indigo-50 hover:bg-indigo-100 border border-indigo-200 rounded-lg p-4 text-left transition-colors">
+            <span class="block font-medium text-indigo-700">📤 CSV Upload</span>
+            <span class="text-xs text-gray-500">Export groups from Azure portal → upload CSV</span>
+          </button>
+          <button id="btn-api" class="flex-1 bg-blue-50 hover:bg-blue-100 border border-blue-200 rounded-lg p-4 text-left transition-colors">
+            <span class="block font-medium text-blue-700">🌐 API Connection</span>
+            <span class="text-xs text-gray-500">Connect to your Graph API endpoint</span>
+          </button>
+        </div>
+      </div>
+
+      <!-- Group List -->
+      <div id="group-list" class="space-y-4">
+        <p class="text-sm text-gray-500 italic">No groups loaded yet. Select an import method above.</p>
+      </div>
+
+      <!-- Add Group Modal (hidden) -->
+      <div id="add-group-modal" class="hidden fixed inset-0 bg-black bg-opacity-50 flex items-center justify-center z-50">
+        <div class="bg-white rounded-xl shadow-lg p-6 w-full max-w-md m-4">
+          <h3 class="text-lg font-semibold text-gray-800 mb-4">Add New Group</h3>
+          <form id="add-group-form" onsubmit="handleAddGroup(event)">
+            <div>
+              <label class="block text-sm font-medium text-gray-700 mb-1">Group Display Name</label>
+              <input type="text" id="new-group-name" required 
+                placeholder="e.g., DevTeam"
+                class="w-full px-3 py-2 border border-gray-300 rounded-lg focus:ring-2 focus:ring-indigo-500 focus:border-transparent">
+            </div>
+            <div>
+              <label class="block text-sm font-medium text-gray-700 mb-1">Group ID (Object ID)</label>
+              <input type="text" id="new-group-id" required
+                placeholder="e.g., a1b2c3d4-e5f6..."
+                class="w-full px-3 py-2 border border-gray-300 rounded-lg focus:ring-2 focus:ring-indigo-500 focus:border-transparent font-mono text-sm">
+            </div>
+            <div>
+              <label class="block text-sm font-medium text-gray-700 mb-1">Membership Type</label>
+              <select id="new-group-membership" class="w-full px-3 py-2 border border-gray-300 rounded-lg focus:ring-2 focus:ring-indigo-500 focus:border-transparent">
+                <option value="Assigned">Assigned (user-based)</option>
+                <option value="DynamicMembership">Dynamic (rule-based)</option>
+              </select>
+            </div>
+            <div class="flex gap-3 pt-2">
+              <button type="submit" class="flex-1 bg-indigo-600 text-white px-4 py-2 rounded-lg hover:bg-indigo-700 transition-colors">Add Group</button>
+              <button type="button" onclick="document.getElementById('add-group-modal').classList.add('hidden')" class="px-4 py-2 border border-gray-300 rounded-lg text-gray-700 hover:bg-gray-50">Cancel</button>
+            </div>
+          </form>
+        </div>
+      </div>
+
+    </div>
+
+    <!-- Step 2: Role Mapping -->
+    <div id="step2" class="bg-white rounded-xl shadow-sm p-6 mb-8 hidden">
+      <h2 class="text-lg font-semibold text-gray-800 mb-4">Step 2: Map Roles to Built-In Azure AD Roles</h2>
+      
+      <!-- Role Mapping Table -->
+      <div id="role-mapping-table" class="overflow-x-auto">
+        <table class="min-w-full divide-y divide-gray-200">
+          <thead class="bg-gray-50">
+            <tr>
+              <th class="px-4 py-3 text-left text-xs font-medium text-gray-500 uppercase">Custom Role</th>
+              <th class="px-4 py-3 text-left text-xs font-medium text-gray-500 uppercase">Azure Built-In Role</th>
+              <th class="px-4 py-3 text-left text-xs font-medium text-gray-500 uppercase">Mapping Type</th>
+              <th class="px-4 py-3 text-center text-xs font-medium text-gray-500 uppercase">Status</th>
+              <th class="px-4 py-3 text-center text-xs font-medium text-gray-500 uppercase">Actions</th>
+            </tr>
+          </thead>
+          <tbody id="mapping-body" class="bg-white divide-y">
+            <tr><td colspan="5" class="text-center text-gray-500 py-8">No role mappings yet. Click "+ Add Role Mapping" below.</td></tr>
+          </tbody>
+        </table>
+      </div>
+
+      <!-- Add Role Mapping -->
+      <div class="mt-6 pt-4 border-t">
+        <button id="btn-add-mapping" onclick="document.getElementById('add-mapping-modal').classList.remove('hidden')" class="w-full bg-indigo-50 hover:bg-indigo-100 border border-indigo-200 rounded-lg p-4 text-left transition-colors">
+          <span class="block font-medium text-indigo-700">+ Add Role Mapping</span>
+        </button>
+      </div>
+
+      <!-- Add Mapping Modal -->
+      <div id="add-mapping-modal" class="hidden fixed inset-0 bg-black bg-opacity-50 flex items-center justify-center z-50">
+        <div class="bg-white rounded-xl shadow-lg p-6 w-full max-w-2xl m-4">
+          <h3 class="text-lg font-semibold text-gray-800 mb-4">Add Role Mapping</h3>
+          <form id="add-mapping-form" onsubmit="handleAddMapping(event)">
+            <div>
+              <label class="block text-sm font-medium text-gray-700 mb-1">Custom Role Name</label>
+              <input type="text" id="mapping-custom-role" required 
+                placeholder="e.g., Developer"
+                class="w-full px-3 py-2 border border-gray-300 rounded-lg focus:ring-2 focus:ring-indigo-500 focus:border-transparent">
+            </div>
+            <div>
+              <label class="block text-sm font-medium text-gray-700 mb-1">Azure Built-In Role</label>
+              <select id="mapping-builtin-role" required class="w-full px-3 py-2 border border-gray-300 rounded-lg focus:ring-2 focus:ring-indigo-500 focus:border-transparent">
+                <option value="User.Read.All">User.Read.All</option>
+                <option value="Contributor">Contributor</option>
+                <option value="Security Administrator">Security Administrator</option>
+                <option value="Global Administrator">Global Administrator</option>
+                <option value="Application Developer">Application Developer</option>
+              </select>
+            </div>
+            <div>
+              <label class="block text-sm font-medium text-gray-700 mb-1">Mapping Type</label>
+              <select id="mapping-type" class="w-full px-3 py-2 border border-gray-300 rounded-lg focus:ring-2 focus:ring-indigo-500 focus:border-transparent">
+                <option value="direct">Direct Assignment</option>
+                <option value="conditional">Conditional (PIM-enabled)</option>
+                <option value="scoped">Scoped to Resources</option>
+              </select>
+            </div>
+            <div class="flex gap-3 pt-2">
+              <button type="submit" class="flex-1 bg-indigo-600 text-white px-4 py-2 rounded-lg hover:bg-indigo-700 transition-colors">Add Mapping</button>
+              <button type="button" onclick="document.getElementById('add-mapping-modal').classList.add('hidden')" class="px-4 py-2 border border-gray-300 rounded-lg text-gray-700 hover:bg-gray-50">Cancel</button>
+            </div>
+          </form>
+        </div>
+      </div>
+
+    </div>
+
+    <!-- Step 3: Apply Rules -->
+    <div id="step3" class="bg-white rounded-xl shadow-sm p-6 mb-8 hidden">
+      <h2 class="text-lg font-semibold text-gray-800 mb-4">Step 3: Apply Scoping Rules</h2>
+      
+      <div class="mb-6 space-y-3">
+        <div class="flex items-start gap-3 p-4 rounded-lg bg-green-50 border border-green-200">
+          <div class="mt-1 w-2 h-2 rounded-full bg-green-500"></div>
+          <div class="flex-1">
+            <p class="text-sm text-gray-800"><strong>✅ Auto-Revoke</strong> if group exceeds membership threshold</p>
+            <input type="number" id="max-memberships" value="5" 
+              placeholder="Max members before auto-revoke"
+              class="mt-2 w-32 px-2 py-1 border border-gray-300 rounded text-sm">
+          </div>
+        </div>
+        <div class="flex items-start gap-3 p-4 rounded-lg bg-orange-50 border border-orange-200">
+          <div class="mt-1 w-2 h-2 rounded-full bg-orange-500"></div>
+          <div class="flex-1">
+            <p class="text-sm text-gray-800"><strong>⚠️ PIM Alert</strong> if role accessed for &gt; 30 days without review</p>
+          </div>
+        </div>
+      </div>
+
+      <!-- Apply Button -->
+      <button id="btn-apply-rules" onclick="handleApplyRules()" class="w-full bg-indigo-600 hover:bg-indigo-700 text-white px-4 py-3 rounded-lg font-medium transition-colors">
+        🎯 Apply All Rules & Generate Recommendations
+      </button>
+    </div>
+
+    <!-- Summary -->
+    <div class="bg-gradient-to-r from-indigo-500 to-purple-600 rounded-xl shadow-sm p-6 text-white">
+      <h3 class="text-lg font-semibold mb-2">📊 Dashboard Configuration Summary</h3>
+      <div class="grid grid-cols-3 gap-4 text-center text-sm">
+        <div>
+          <p id="summary-groups" class="font-bold text-2xl">0</p>
+          <p>Groups Configured</p>
+        </div>
+        <div>
+          <p id="summary-mappings" class="font-bold text-2xl">0</p>
+          <p>Role Mappings</p>
+        </div>
+        <div>
+          <span id="check-count" class="inline-block w-8 h-8 rounded-full bg-white/20 flex items-center justify-center font-bold">
+            <svg width="24" height="24" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path d="M9 12l2 2 4-4m6 0l-2-2 4-4"/></svg>
+          </span>
+          <p id="summary-ready" class="mt-1">Ready for Dashboard</p>
+        </div>
+      </div>
+    </div>
+
+  </div>
+
+  <script>
+    let groups = [];
+    let mappings = [];
+    let currentStep = 1;
+    const API_BASE = '/api';
+
+    function escapeHtml(value) {
+      return String(value ?? '')
+        .replaceAll('&', '&amp;')
+        .replaceAll('<', '&lt;')
+        .replaceAll('>', '&gt;')
+        .replaceAll('"', '&quot;')
+        .replaceAll("'", '&#039;');
+    }
+
+    function updateStepByData() {
+      currentStep = groups.length ? 2 : 1;
+      if (groups.length && mappings.length) currentStep = 3;
+      for (let i = 2; i <= 3; i++) {
+        const section = document.getElementById('step' + i);
+        if (i <= currentStep) section.classList.remove('hidden');
+        else section.classList.add('hidden');
+      }
+      updateStepIndicators();
+    }
+
+    function updateStepIndicators() {
+      for (let i = 1; i <= 3; i++) {
+        const indicator = document.getElementById('step' + i + '-indicator');
+        if (i < currentStep) {
+          indicator.className = 'w-10 h-10 rounded-full bg-green-600 text-white flex items-center justify-center font-bold';
+          indicator.innerHTML = '✓';
+        } else if (i === currentStep) {
+          indicator.className = 'w-10 h-10 rounded-full bg-indigo-600 text-white flex items-center justify-center font-bold';
+          indicator.innerHTML = i;
+        } else {
+          indicator.className = 'w-10 h-10 rounded-full bg-gray-300 text-gray-600 flex items-center justify-center font-bold';
+          indicator.innerHTML = i;
+        }
+      }
+    }
+
+    function renderGroups() {
+      const container = document.getElementById('group-list');
+      if (!groups.length) {
+        container.innerHTML = '<p class="text-sm text-gray-500 italic">No groups loaded yet. Select an import method above.</p>';
+        return;
+      }
+      container.innerHTML = groups.map((g, idx) =>
+        '<div class="border rounded-lg p-4 hover:shadow-md transition-shadow">' +
+          '<div class="flex justify-between items-start mb-2">' +
+            '<div>' +
+              '<span class="font-medium text-indigo-700">' + escapeHtml(g.display_name) + '</span>' +
+              '<p class="text-xs text-gray-500 font-mono">' + escapeHtml(g.group_id) + '</p>' +
+            '</div>' +
+            '<span class="text-xs px-2 py-1 rounded ' + (g.membershipType === 'Assigned' ? 'bg-blue-100 text-blue-800' : 'bg-purple-100 text-purple-800') + '">' + escapeHtml(g.membershipType || 'Assigned') + '</span>' +
+          '</div>' +
+          '<p class="text-xs text-gray-600 mb-2">Members: ' + Number(g.members_count || 0) + ' • Roles: ' + (Array.isArray(g.role_assignments) ? g.role_assignments.length : 0) + '</p>' +
+          '<input data-group-idx="' + idx + '" class="w-full px-2 py-1 border border-gray-300 rounded text-sm" placeholder="roles CSV (ex: Reader,Contributor)" value="' + escapeHtml((g.role_assignments || []).join(',')) + '" />' +
+        '</div>'
+      ).join('');
+    }
+
+    function syncGroupRolesFromInputs() {
+      document.querySelectorAll('input[data-group-idx]').forEach((input) => {
+        const idx = Number(input.getAttribute('data-group-idx'));
+        if (!Number.isNaN(idx) && groups[idx]) {
+          groups[idx].role_assignments = input.value.split(',').map((v) => v.trim()).filter(Boolean);
+        }
+      });
+    }
+
+    function renderMappings() {
+      const tbody = document.getElementById('mapping-body');
+      if (!mappings.length) {
+        tbody.innerHTML = '<tr><td colspan="5" class="text-center text-gray-500 py-8">No role mappings yet. Click "+ Add Role Mapping" below.</td></tr>';
+        return;
+      }
+      const getColorClass = (type) => type === 'direct' ? 'green' : (type === 'conditional' ? 'yellow' : 'blue');
+      const getTypeLabel = (type) => type.charAt(0).toUpperCase() + type.slice(1);
+      tbody.innerHTML = mappings.map((m, idx) =>
+        '<tr class="hover:bg-gray-50">' +
+          '<td class="px-4 py-3 text-sm font-medium text-gray-900">' + escapeHtml(m.customRole) + '</td>' +
+          '<td class="px-4 py-3 text-sm text-gray-600">' + escapeHtml(m.builtinRole) + '</td>' +
+          '<td class="px-4 py-3 text-xs"><span class="inline-flex items-center px-2 py-1 rounded bg-' + getColorClass(m.type) + '-50 text-' + getColorClass(m.type) + '-700">' + escapeHtml(getTypeLabel(m.type)) + '</span></td>' +
+          '<td class="px-4 py-3 text-center"><svg class="w-5 h-5 text-green-500 inline" fill="currentColor" viewBox="0 0 20 20"><path d="M16.707 5.293a1 1 0 010 1.414l-8 8a1 1 0 01-1.414 0l-4-4a1 1 0 011.414-1.414L8 12.586l7.293-7.293a1 1 0 011.414 0z"/></svg></td>' +
+          '<td class="px-4 py-3 text-center"><button onclick="removeMapping(' + idx + ')" class="text-red-500 hover:text-red-700">×</button></td>' +
+        '</tr>'
+      ).join('');
+    }
+
+    function updateSummary() {
+      document.getElementById('summary-groups').textContent = groups.length;
+      document.getElementById('summary-mappings').textContent = mappings.length;
+      const checkCount = document.getElementById('check-count');
+      if (groups.length && mappings.length) {
+        checkCount.innerHTML = '<svg width="24" height="24" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path d="M9 12l2 2 4-4m6 0l-2-2 4-4"/></svg>';
+      } else {
+        checkCount.textContent = '!';
+      }
+      updateStepByData();
+    }
+
+    async function loadFromBackendConfig() {
+      try {
+        const res = await fetch(API_BASE + '/config');
+        if (!res.ok) throw new Error('Config API unavailable');
+        const payload = await res.json();
+        groups = (payload.groups || []).map((g) => ({
+          group_id: g.group_id,
+          display_name: g.display_name,
+          members_count: Number(g.members_count || 0),
+          role_assignments: Array.isArray(g.role_assignments) ? g.role_assignments : [],
+          membershipType: 'Assigned',
+        }));
+        renderGroups();
+        updateSummary();
+      } catch (err) {
+        alert('Erreur chargement config API: ' + err.message);
+      }
+    }
+
+    function parseCsvToGroups(content) {
+      const lines = content.split(/\r?\n/).filter(Boolean);
+      if (lines.length < 2) return [];
+      const headers = lines[0].split(',').map((h) => h.trim());
+      const findIndex = (...candidates) => headers.findIndex((h) => candidates.includes(h));
+      const idxId = findIndex('group_id', 'id', 'object_id');
+      const idxName = findIndex('display_name', 'displayName', 'name');
+      const idxMembers = findIndex('members_count', 'memberCount', 'members');
+      const idxRoles = findIndex('role_assignments', 'roles');
+      const out = [];
+      for (const line of lines.slice(1)) {
+        const cols = line.split(',');
+        if (!cols.length) continue;
+        out.push({
+          group_id: (cols[idxId] || '').trim(),
+          display_name: (cols[idxName] || cols[idxId] || '').trim(),
+          members_count: Number((cols[idxMembers] || '0').trim() || 0),
+          role_assignments: idxRoles >= 0 ? (cols[idxRoles] || '').split('|').map((r) => r.trim()).filter(Boolean) : [],
+          membershipType: 'Assigned',
+        });
+      }
+      return out.filter((g) => g.group_id && g.display_name);
+    }
+
+    document.getElementById('btn-csv').addEventListener('click', () => {
+      const input = document.createElement('input');
+      input.type = 'file';
+      input.accept = '.csv,.json';
+      input.onchange = async () => {
+        const file = input.files && input.files[0];
+        if (!file) return;
+        const content = await file.text();
+        if (file.name.toLowerCase().endsWith('.json')) {
+          try {
+            const payload = JSON.parse(content);
+            const rows = Array.isArray(payload) ? payload : (payload.groups || payload.value || []);
+            groups = rows.map((g) => ({
+              group_id: g.group_id || g.id || g.object_id || '',
+              display_name: g.display_name || g.displayName || g.name || '',
+              members_count: Number(g.members_count || g.memberCount || 0),
+              role_assignments: Array.isArray(g.role_assignments) ? g.role_assignments : [],
+              membershipType: g.membershipType || 'Assigned',
+            })).filter((g) => g.group_id && g.display_name);
+          } catch (err) {
+            alert('JSON invalide: ' + err.message);
+            return;
+          }
+        } else {
+          groups = parseCsvToGroups(content);
+        }
+        renderGroups();
+        updateSummary();
+      };
+      input.click();
+    });
+
+    document.getElementById('btn-api').addEventListener('click', () => {
+      loadFromBackendConfig();
+    });
+
+    function handleAddGroup(event) {
+      event.preventDefault();
+      groups.push({
+        group_id: document.getElementById('new-group-id').value.trim(),
+        display_name: document.getElementById('new-group-name').value.trim(),
+        members_count: 0,
+        role_assignments: [],
+        membershipType: document.getElementById('new-group-membership').value,
+      });
+      renderGroups();
+      document.getElementById('add-group-modal').classList.add('hidden');
+      event.target.reset();
+      updateSummary();
+    }
+
+    function handleAddMapping(event) {
+      event.preventDefault();
+      mappings.push({
+        customRole: document.getElementById('mapping-custom-role').value.trim(),
+        builtinRole: document.getElementById('mapping-builtin-role').value.trim(),
+        type: document.getElementById('mapping-type').value,
+      });
+      renderMappings();
+      document.getElementById('add-mapping-modal').classList.add('hidden');
+      event.target.reset();
+      updateSummary();
+    }
+
+    function removeMapping(index) {
+      mappings.splice(index, 1);
+      renderMappings();
+      updateSummary();
+    }
+
+    async function handleApplyRules() {
+      if (!groups.length) {
+        alert('Configure au moins un groupe.');
+        return;
+      }
+      syncGroupRolesFromInputs();
+
+      const roleMappings = {};
+      mappings.forEach((m) => {
+        if (m.customRole && m.builtinRole) roleMappings[m.customRole] = m.builtinRole;
+      });
+
+      const payload = {
+        groups: groups.map((g) => ({
+          group_id: g.group_id,
+          display_name: g.display_name,
+          members_count: Number(g.members_count || 0),
+          role_assignments: Array.isArray(g.role_assignments) ? g.role_assignments : [],
+        })),
+        role_mappings: roleMappings,
+        rules: {
+          max_memberships: Number(document.getElementById('max-memberships').value || 5),
+          pim_alert_days: 30,
+        },
+      };
+
+      try {
+        const res = await fetch(API_BASE + '/aad/load-groups', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify(payload),
+        });
+        const data = await res.json();
+        if (!res.ok) throw new Error(data.detail || 'Erreur upload blueprint');
+        alert('Blueprint appliqué: ' + (data.message || 'OK') + '\nOuvre le dashboard: /');
+      } catch (err) {
+        alert('Echec application blueprint: ' + err.message);
+      }
+    }
+
+    updateStepIndicators();
+    renderGroups();
+    renderMappings();
+    loadFromBackendConfig();
+  </script>
+</body>
+</html>

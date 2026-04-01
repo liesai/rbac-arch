@@ -1,0 +1,42 @@
+---
+description: "Modèle de rôle Azure AD avec attribution automatique"
+guidelines:
+  - type: security_admin
+    description: Rôle administrateur sécurité avec PIM auto-activation
+    permissions:
+      - "User.ReadWrite.All"
+      - "Group.ReadWrite.All"
+      - "RoleManagement.ReadWrite.Directory"
+      - "SecurityEvents.ReadOnly.Access"
+    attribution:
+      method: automatic
+      trigger: security_incident
+      escalation_path: tier2_security_team
+  
+  - type: data_access
+    description: Accès lecture-écriture aux données utilisateurs
+    permissions:
+      - "User.Read.All"
+      - "Group.ReadWrite.All"
+      - "Mail.Read"
+      - "Files.ReadBasic.All"
+    attribution:
+      method: group_based
+      auto_assign_on_group_join: true
+      data_access_labelled: true
+
+  - type: standard
+    description: Rôle utilisateur standard sans privilèges excessifs
+    permissions:
+      - "User.Read"
+      - "Group.Read"
+      - "Mail.Read"
+      - "Files.Read"
+    attribution:
+      method: manual
+      max_expiry_days: 365
+      review_frequency: quarterly
+
+model_version: "1.0"
+created_by: "rbac-governance-bot"
+last_updated: "${TODAY}"

@@ -1,0 +1,84 @@
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
+
+:root {
+  --ink-strong: #102033;
+  --ink-soft: #506176;
+  --line-soft: rgba(109, 130, 153, 0.18);
+  --surface: rgba(255, 255, 255, 0.82);
+  --surface-strong: rgba(255, 255, 255, 0.92);
+  --navy: #153a5b;
+  --teal: #0f8b8d;
+  --amber: #d9822b;
+  --rose: #d95d7a;
+}
+
+html {
+  background:
+    radial-gradient(circle at top left, rgba(15, 139, 141, 0.18), transparent 28%),
+    radial-gradient(circle at top right, rgba(217, 130, 43, 0.16), transparent 24%),
+    linear-gradient(180deg, #eef5f7 0%, #f7f4ed 100%);
+}
+
+body {
+  font-family: "IBM Plex Sans", "Segoe UI", sans-serif;
+  color: var(--ink-strong);
+  min-height: 100vh;
+  background:
+    linear-gradient(180deg, rgba(255, 255, 255, 0.2), rgba(255, 255, 255, 0)),
+    radial-gradient(circle at 20% 20%, rgba(21, 58, 91, 0.08), transparent 34%);
+}
+
+#root {
+  min-height: 100vh;
+}
+
+::selection {
+  background: rgba(15, 139, 141, 0.22);
+}
+
+.dashboard-shell {
+  background:
+    linear-gradient(135deg, rgba(255, 255, 255, 0.44), rgba(255, 255, 255, 0)),
+    transparent;
+}
+
+.glass-panel {
+  background: var(--surface);
+  border: 1px solid var(--line-soft);
+  box-shadow:
+    0 20px 45px rgba(16, 32, 51, 0.07),
+    inset 0 1px 0 rgba(255, 255, 255, 0.7);
+  backdrop-filter: blur(14px);
+}
+
+.glass-panel-strong {
+  background: var(--surface-strong);
+  border: 1px solid rgba(109, 130, 153, 0.22);
+  box-shadow:
+    0 16px 32px rgba(16, 32, 51, 0.08),
+    inset 0 1px 0 rgba(255, 255, 255, 0.78);
+  backdrop-filter: blur(16px);
+}
+
+.stat-panel {
+  background:
+    linear-gradient(180deg, rgba(255, 255, 255, 0.94), rgba(245, 249, 250, 0.88));
+  border: 1px solid rgba(109, 130, 153, 0.18);
+  box-shadow:
+    0 14px 28px rgba(16, 32, 51, 0.06),
+    inset 0 1px 0 rgba(255, 255, 255, 0.72);
+}
+
+.section-title {
+  letter-spacing: -0.02em;
+}
+
+.dashboard-table thead tr {
+  background: rgba(16, 32, 51, 0.03);
+}
+
+.dashboard-table tbody tr:nth-child(2n) {
+  background: rgba(255, 255, 255, 0.45);
+}

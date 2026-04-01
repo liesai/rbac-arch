@@ -1,0 +1,42 @@
+{
+  "groups": [
+    {
+      "group_id": "11ccbcf3-c546-44e8-aa42-5cfa1b0c1884",
+      "display_name": "admin_site_vente",
+      "members_count": 2,
+      "role_assignments": []
+    },
+    {
+      "group_id": "20b25cbf-39c3-4494-835b-a98a0c98dbaf",
+      "display_name": "kafka-manager",
+      "members_count": 1,
+      "role_assignments": []
+    },
+    {
+      "group_id": "411f5beb-c7c1-46a7-b706-0c86233559af",
+      "display_name": "restricted-users",
+      "members_count": 0,
+      "role_assignments": []
+    },
+    {
+      "group_id": "74bb2b40-38d2-4f68-86e5-32cdb0af4b85",
+      "display_name": "Groupe-Contributeurs-Demo",
+      "members_count": 1,
+      "role_assignments": [
+        "Contributor"
+      ]
+    },
+    {
+      "group_id": "d26ee8f2-6368-4396-ab79-61ef0bfc5b71",
+      "display_name": "GG-GHOSTBRIDGE-AUTHORIZED",
+      "members_count": 1,
+      "role_assignments": []
+    },
+    {
+      "group_id": "d90493a1-0d29-4b7e-b979-4d2ee352ea5e",
+      "display_name": "CDK-DEV-READ",
+      "members_count": 1,
+      "role_assignments": []
+    }
+  ]
+}

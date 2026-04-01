@@ -1,0 +1,144 @@
+version: '2.0'
+naming:
+  template: AAD-{domain}-{purpose}-{env}-{access}
+  variables:
+  - key: domain
+    pattern: ^[A-Z]{2,5}$
+    transform: upper
+  - key: purpose
+    pattern: ^[A-Z0-9-]{3,30}$
+    transform: upper
+  - key: env
+    pattern: ^(DEV|TST|PRD)$
+    transform: upper
+  - key: access
+    pattern: ^(USR|ADM|SEC)$
+    transform: upper
+  domains:
+    FIN:
+      template: AAD-{domain}-{purpose}-{env}-{access}
+      allowed_group_types:
+      - USR
+      - ADM
+      default_tags:
+        domain: finance
+        cost_center: fin
+    SEC:
+      template: AAD-{domain}-{purpose}-{env}-{access}
+      allowed_group_types:
+      - SEC
+      - ADM
+      default_tags:
+        domain: security
+        cost_center: sec
+    ENG:
+      template: AAD-{domain}-{purpose}-{env}-{access}
+      allowed_group_types:
+      - USR
+      - ADM
+      default_tags:
+        domain: engineering
+        cost_center: eng
+domain_routing:
+  default_domain: ENG
+  allowed_domains:
+  - FIN
+  - SEC
+  - ENG
+requirements:
+  owner_required: true
+  tags_required:
+  - env
+  - criticality
+  - cost_center
+  last_review_max_days: 90
+governance_profiles:
+  shared_user_nonprod:
+    group_type: USR
+    env: dev
+    criticality: low
+    max_scope_level: resource_group
+    recommended_controls:
+    - owner
+    - naming
+    - quarterly_review
+  finance_admin_prod:
+    group_type: ADM
+    domain: FIN
+    env: prod
+    criticality: high
+    max_scope_level: resource_group
+    recommended_controls:
+    - owner
+    - pim
+    - monthly_review
+    - ticket_reference
+  security_privileged:
+    group_type: SEC
+    domain: SEC
+    env: prod
+    criticality: high
+    max_scope_level: subscription
+    recommended_controls:
+    - owner
+    - pim
+    - mfa
+    - monthly_review
+    - approval_record
+group_catalog:
+  matchers:
+  - id: finance-admins
+    match:
+      display_name_regex: (?i)finance|compta|billing
+      role_any:
+      - Contributor
+      - Owner
+    profile: finance_admin_prod
+    tags:
+      domain: finance
+      cost_center: fin
+  - id: security-privileged
+    match:
+      display_name_regex: (?i)sec|security|priv
+      role_any:
+      - Privileged Access Administrator
+      - Security Administrator
+      - Owner
+    profile: security_privileged
+    tags:
+      domain: security
+      cost_center: sec
+  - id: default-shared
+    match:
+      group_id_regex: ^(AAD|GRP)-
+    profile: shared_user_nonprod
+  overrides: {}
+allowed_roles_by_group_type:
+  USR:
+  - Reader
+  - Billing Reader
+  ADM:
+  - Contributor
+  - User Access Administrator
+  - Application Administrator
+  SEC:
+  - Security Administrator
+  - Privileged Role Administrator
+  - Privileged Access Administrator
+forbidden_rules:
+- id: no-owner-outside-sec
+  description: "Owner n'est autoris\xE9 que pour SEC"
+  scope_contains: /subscriptions/
+  forbidden_roles:
+  - Owner
+  allowed_group_types:
+  - SEC
+access_control:
+  enabled: true
+  default_role: none
+  role_groups:
+    admin:
+    - AAD-RBAC-ADMINS
+    user:
+    - AAD-RBAC-USERS
+    - AAD-RBAC-ADMINS
