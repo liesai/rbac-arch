@@ -19,6 +19,100 @@ Guide utilisateur simplifié :
 
 - [USER_GUIDE.md](/home/marc/openclaw-runtime/workspace/rbac-arch/USER_GUIDE.md)
 
+## Installation
+
+### Prérequis
+
+- Python 3.11 ou plus récent
+- Node.js 20 ou plus récent
+- `npm`
+- Azure CLI `az` si tu veux utiliser `Sync Azure`
+
+Vérification rapide :
+
+```bash
+python3 --version
+node --version
+npm --version
+az version
+```
+
+### Backend Python
+
+Le backend dépend de :
+
+- FastAPI
+- Uvicorn
+- Pydantic
+- PyYAML
+
+Le fichier de dépendances est : [requirements.txt](/home/marc/openclaw-runtime/workspace/rbac-arch/requirements.txt)
+
+Installation recommandée :
+
+```bash
+python3 -m venv .venv
+source .venv/bin/activate
+pip install --upgrade pip
+pip install -r requirements.txt
+```
+
+### Frontend Dashboard
+
+Le frontend React/Vite a déjà ses manifests :
+
+- [dashboard/package.json](/home/marc/openclaw-runtime/workspace/rbac-arch/dashboard/package.json)
+- [dashboard/package-lock.json](/home/marc/openclaw-runtime/workspace/rbac-arch/dashboard/package-lock.json)
+
+Installation :
+
+```bash
+cd dashboard
+npm install
+cd ..
+```
+
+### Déploiement Docker
+
+La stack Docker est définie dans :
+
+- [Dockerfile.api](/home/marc/openclaw-runtime/workspace/rbac-arch/Dockerfile.api)
+- [Dockerfile.dashboard](/home/marc/openclaw-runtime/workspace/rbac-arch/Dockerfile.dashboard)
+- [docker-compose.yml](/home/marc/openclaw-runtime/workspace/rbac-arch/docker-compose.yml)
+
+Lancement :
+
+```bash
+docker compose up --build
+```
+
+Puis ouvrir :
+
+- dashboard : `http://127.0.0.1:8111`
+- API : `http://127.0.0.1:8110`
+
+Notes importantes pour Docker :
+
+- le service `api` embarque Azure CLI
+- `docker-compose.yml` monte `${HOME}/.azure` en lecture seule dans le conteneur pour réutiliser une session `az login` du poste hôte
+- la policy [config/governance-policy.yaml](/home/marc/openclaw-runtime/workspace/rbac-arch/config/governance-policy.yaml) est montée en volume via `./config:/app/config` pour persister les modifications faites depuis `Policy Studio`
+- le dataset [aad-groups-rbac.json](/home/marc/openclaw-runtime/workspace/rbac-arch/aad-groups-rbac.json) est aussi monté pour persister les imports locaux
+
+### Azure CLI
+
+Pour que `Sync Azure` fonctionne, il faut :
+
+```bash
+az login
+az account show
+```
+
+Selon ton contexte, il peut aussi être utile de sélectionner explicitement la bonne subscription :
+
+```bash
+az account set --subscription "<subscription-id-ou-nom>"
+```
+
 ## Lancement
 
 Mode local/dev :
@@ -43,6 +137,39 @@ Ports par défaut :
 
 - API : `http://127.0.0.1:8110`
 - Dashboard : `http://127.0.0.1:8111`
+
+### Démarrage manuel
+
+Si tu ne veux pas utiliser les scripts, tu peux démarrer les deux briques séparément.
+
+Backend :
+
+```bash
+source .venv/bin/activate
+uvicorn app:app --host 0.0.0.0 --port 8110 --reload
+```
+
+Frontend :
+
+```bash
+cd dashboard
+npm run dev -- --host 0.0.0.0 --port 8111
+```
+
+Build production du dashboard :
+
+```bash
+cd dashboard
+npm run build
+cd ..
+API_BASE=http://127.0.0.1:8110 DASH_PORT=8111 DIST_DIR=./dashboard/dist node serve-dashboard.mjs
+```
+
+Arrêt de la stack Docker :
+
+```bash
+docker compose down
+```
 
 ## Architecture
 
@@ -257,6 +384,46 @@ Dernière passe UI :
 - tableau plus lisible
 
 ## Pagination et recherche serveur
+
+Les gros volumes sont maintenant gérés côté backend.
+
+`POST /generate-matrix` accepte notamment :
+
+- `search`
+- `page`
+- `page_size`
+- `sort_by`
+- `sort_dir`
+
+`GET /compliance-check` accepte notamment :
+
+- `search`
+- `findings_page`
+- `findings_page_size`
+- `findings_severity`
+
+Le dashboard consomme déjà ces paramètres pour éviter de charger toute la matrice ou tous les findings côté navigateur.
+
+## Arborescence utile
+
+- [app.py](/home/marc/openclaw-runtime/workspace/rbac-arch/app.py) : API FastAPI et moteur de recommandations
+- [config/governance-policy.yaml](/home/marc/openclaw-runtime/workspace/rbac-arch/config/governance-policy.yaml) : policy active
+- [requirements.txt](/home/marc/openclaw-runtime/workspace/rbac-arch/requirements.txt) : dépendances Python
+- [run-stack-local.sh](/home/marc/openclaw-runtime/workspace/rbac-arch/run-stack-local.sh) : lancement local principal
+- [run-stack.sh](/home/marc/openclaw-runtime/workspace/rbac-arch/run-stack.sh) : variante de lancement
+- [docker-compose.yml](/home/marc/openclaw-runtime/workspace/rbac-arch/docker-compose.yml) : stack de déploiement Docker
+- [Dockerfile.api](/home/marc/openclaw-runtime/workspace/rbac-arch/Dockerfile.api) : image backend
+- [Dockerfile.dashboard](/home/marc/openclaw-runtime/workspace/rbac-arch/Dockerfile.dashboard) : image frontend
+- [dashboard/package.json](/home/marc/openclaw-runtime/workspace/rbac-arch/dashboard/package.json) : dépendances frontend
+- [dashboard/src/App.jsx](/home/marc/openclaw-runtime/workspace/rbac-arch/dashboard/src/App.jsx) : UI principale
+- [dashboard/src/index.css](/home/marc/openclaw-runtime/workspace/rbac-arch/dashboard/src/index.css) : design system léger
+
+## Limitations actuelles
+
+- pas de `requirements-dev.txt` ni de pipeline de tests automatisés
+- pas de gestion lockée des dépendances Python
+- les scripts d’installation restent simples, sans bootstrap unique
+- la sync Azure en Docker dépend de l’état du répertoire hôte `${HOME}/.azure`
 
 ### `POST /generate-matrix`
 

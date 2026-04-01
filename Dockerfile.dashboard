@@ -1,0 +1,24 @@
+FROM node:20-alpine AS build
+
+WORKDIR /app/dashboard
+
+COPY dashboard/package.json dashboard/package-lock.json ./
+RUN npm ci
+
+COPY dashboard ./
+RUN npm run build
+
+FROM node:20-alpine
+
+WORKDIR /app
+
+ENV DASH_PORT=8111 \
+    API_BASE=http://api:8110 \
+    DIST_DIR=/app/dashboard/dist
+
+COPY serve-dashboard.mjs ./serve-dashboard.mjs
+COPY --from=build /app/dashboard/dist ./dashboard/dist
+
+EXPOSE 8111
+
+CMD ["node", "serve-dashboard.mjs"]

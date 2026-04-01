@@ -1,0 +1,28 @@
+services:
+  api:
+    build:
+      context: .
+      dockerfile: Dockerfile.api
+    container_name: rbac-arch-api
+    ports:
+      - "8110:8110"
+    volumes:
+      - ./config:/app/config
+      - ./aad-groups-rbac.json:/app/aad-groups-rbac.json
+      - ${HOME}/.azure:/root/.azure:ro
+    restart: unless-stopped
+
+  dashboard:
+    build:
+      context: .
+      dockerfile: Dockerfile.dashboard
+    container_name: rbac-arch-dashboard
+    depends_on:
+      - api
+    environment:
+      API_BASE: http://api:8110
+      DASH_PORT: 8111
+      DIST_DIR: /app/dashboard/dist
+    ports:
+      - "8111:8111"
+    restart: unless-stopped

@@ -13,6 +13,29 @@ Cet outil permet de :
 
 ## Démarrage rapide
 
+Installer d’abord la stack :
+
+```bash
+python3 -m venv .venv
+source .venv/bin/activate
+pip install -r requirements.txt
+cd dashboard
+npm install
+cd ..
+```
+
+Si tu veux utiliser Azure :
+
+```bash
+az login
+```
+
+Ou lancer directement en Docker :
+
+```bash
+docker compose up --build
+```
+
 Lancer la stack locale :
 
 ```bash
@@ -164,8 +187,14 @@ Aujourd’hui, il ne couvre pas encore :
 - PIM en détail
 - toutes les exceptions métier automatiquement
 
+En mode Docker :
+
+- `Sync Azure` dépend d’une session `az login` disponible sur la machine hôte
+- la stack monte `${HOME}/.azure` dans le conteneur API
+
 ## Fichiers utiles
 
 - doc technique : [README.md](/home/marc/openclaw-runtime/workspace/rbac-arch/README.md)
 - policy active : [config/governance-policy.yaml](/home/marc/openclaw-runtime/workspace/rbac-arch/config/governance-policy.yaml)
-
+- dépendances Python : [requirements.txt](/home/marc/openclaw-runtime/workspace/rbac-arch/requirements.txt)
+- dépendances frontend : [dashboard/package.json](/home/marc/openclaw-runtime/workspace/rbac-arch/dashboard/package.json)
