@@ -15,6 +15,10 @@ Le projet a évolué d’un simple prototype de matrice RBAC vers un outil avec 
 - `Policy Studio` pour éditer la policy
 - pagination et recherche serveur pour mieux tenir la charge
 
+Guide utilisateur simplifié :
+
+- [USER_GUIDE.md](/home/marc/openclaw-runtime/workspace/rbac-arch/USER_GUIDE.md)
+
 ## Lancement
 
 Mode local/dev :
