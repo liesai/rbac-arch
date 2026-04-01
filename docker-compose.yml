@@ -16,6 +16,8 @@ services:
     build:
       context: .
       dockerfile: Dockerfile.dashboard
+      args:
+        NPM_INSTALL_MODE: ${NPM_INSTALL_MODE:-online}
     container_name: rbac-arch-dashboard
     depends_on:
       - api

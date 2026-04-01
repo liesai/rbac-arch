@@ -98,6 +98,31 @@ Notes importantes pour Docker :
 - la policy [config/governance-policy.yaml](/home/marc/openclaw-runtime/workspace/rbac-arch/config/governance-policy.yaml) est montée en volume via `./config:/app/config` pour persister les modifications faites depuis `Policy Studio`
 - le dataset [aad-groups-rbac.json](/home/marc/openclaw-runtime/workspace/rbac-arch/aad-groups-rbac.json) est aussi monté pour persister les imports locaux
 
+### Build dashboard hors-ligne
+
+Le dashboard supporte maintenant un mode de build Docker offline basé sur un cache npm local.
+
+Préparer le cache sur une machine connectée :
+
+```bash
+./scripts/prepare-dashboard-offline-cache.sh
+```
+
+Cela remplit le dossier local `.npm-cache/` à partir de [dashboard/package-lock.json](/home/marc/openclaw-runtime/workspace/rbac-arch/dashboard/package-lock.json).
+
+Ensuite, sur une machine sans accès registry npm ou avec un réseau instable :
+
+```bash
+NPM_INSTALL_MODE=offline docker compose build dashboard
+NPM_INSTALL_MODE=offline docker compose up --build
+```
+
+Détails :
+
+- le mode par défaut reste `online`
+- en mode `offline`, le build échoue explicitement si `.npm-cache/` n’est pas présent dans le projet
+- ce cache n’est pas versionné par défaut dans Git
+
 ### Azure CLI
 
 Pour que `Sync Azure` fonctionne, il faut :
@@ -414,6 +439,7 @@ Le dashboard consomme déjà ces paramètres pour éviter de charger toute la ma
 - [docker-compose.yml](/home/marc/openclaw-runtime/workspace/rbac-arch/docker-compose.yml) : stack de déploiement Docker
 - [Dockerfile.api](/home/marc/openclaw-runtime/workspace/rbac-arch/Dockerfile.api) : image backend
 - [Dockerfile.dashboard](/home/marc/openclaw-runtime/workspace/rbac-arch/Dockerfile.dashboard) : image frontend
+- [scripts/prepare-dashboard-offline-cache.sh](/home/marc/openclaw-runtime/workspace/rbac-arch/scripts/prepare-dashboard-offline-cache.sh) : préparation du cache npm offline
 - [dashboard/package.json](/home/marc/openclaw-runtime/workspace/rbac-arch/dashboard/package.json) : dépendances frontend
 - [dashboard/src/App.jsx](/home/marc/openclaw-runtime/workspace/rbac-arch/dashboard/src/App.jsx) : UI principale
 - [dashboard/src/index.css](/home/marc/openclaw-runtime/workspace/rbac-arch/dashboard/src/index.css) : design system léger
