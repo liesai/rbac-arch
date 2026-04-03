@@ -4,6 +4,10 @@ from pydantic import BaseModel, Field
 from typing import List, Dict, Optional, Any
 import csv
 import io
+import os
+import tempfile
+import threading
+import uuid
 from datetime import datetime
 from copy import deepcopy
 from concurrent.futures import ThreadPoolExecutor, as_completed
@@ -124,6 +128,9 @@ CURRENT_GROUPS = deepcopy(INITIAL_GROUPS)
 CURRENT_SOURCE = "default"
 LAST_CONFIG_UPDATE = datetime.now().isoformat()
 POLICY_PATH = Path(__file__).resolve().parent / "config" / "governance-policy.yaml"
+IMPORT_JOB_LOCK = threading.Lock()
+IMPORT_JOBS: Dict[str, Dict[str, Any]] = {}
+IMPORT_EXECUTOR = ThreadPoolExecutor(max_workers=2)
 
 DEFAULT_POLICY = {
     "version": "2.0",
@@ -703,6 +710,91 @@ def _config_payload(include_groups: bool = False) -> Dict[str, Any]:
 
 def _current_groups() -> List[Dict[str, Any]]:
     return CURRENT_GROUPS
+
+
+def _set_import_job(job_id: str, **updates: Any) -> Dict[str, Any]:
+    with IMPORT_JOB_LOCK:
+        current = IMPORT_JOBS.get(job_id, {}).copy()
+        current.update(updates)
+        current["job_id"] = job_id
+        IMPORT_JOBS[job_id] = current
+        return current.copy()
+
+
+def _get_import_job(job_id: str) -> Optional[Dict[str, Any]]:
+    with IMPORT_JOB_LOCK:
+        job = IMPORT_JOBS.get(job_id)
+        return job.copy() if job else None
+
+
+def _apply_imported_groups(valid_groups: List[RBACConfig]) -> None:
+    global CURRENT_GROUPS, CURRENT_SOURCE, LAST_CONFIG_UPDATE
+    CURRENT_GROUPS = [g.model_dump() for g in valid_groups]
+    CURRENT_SOURCE = "uploaded"
+    LAST_CONFIG_UPDATE = datetime.now().isoformat()
+
+
+def _parse_json_payload(payload: Any) -> List[RBACConfig]:
+    role_map: Dict[str, str] = {}
+    if isinstance(payload, dict) and isinstance(payload.get("groups"), list):
+        rows = payload["groups"]
+        role_map = _normalize_role_map(payload.get("role_mappings") or payload.get("role_mapping"))
+    elif isinstance(payload, dict) and isinstance(payload.get("value"), list):
+        rows = payload["value"]
+        role_map = _normalize_role_map(payload.get("role_mappings") or payload.get("role_mapping"))
+    elif isinstance(payload, list):
+        rows = payload
+    else:
+        raise HTTPException(
+            status_code=400,
+            detail="JSON invalide: attendu liste, objet {groups: []} ou objet Graph {value: []}",
+        )
+    return [_normalize_group_row(row, role_map=role_map, idx=idx) for idx, row in enumerate(rows)]
+
+
+def _parse_csv_stream(stream: io.TextIOBase) -> List[RBACConfig]:
+    reader = csv.DictReader(stream)
+    return [_normalize_group_row(row, idx=idx) for idx, row in enumerate(reader)]
+
+
+def _validate_imported_groups(groups: List[RBACConfig]) -> List[RBACConfig]:
+    valid_groups = [g for g in groups if g.group_id and g.display_name]
+    if not valid_groups:
+        raise HTTPException(status_code=400, detail="Aucun groupe valide trouvé dans la payload")
+    return valid_groups
+
+
+def _run_import_job(job_id: str, file_path: str, file_kind: str) -> None:
+    try:
+        _set_import_job(job_id, status="running", started_at=datetime.now().isoformat())
+        if file_kind == "json":
+            with open(file_path, "rb") as fh:
+                payload = json.loads(fh.read().decode("utf-8", errors="ignore"))
+            groups = _parse_json_payload(payload)
+        else:
+            with open(file_path, "r", encoding="utf-8", errors="ignore", newline="") as fh:
+                groups = _parse_csv_stream(fh)
+
+        valid_groups = _validate_imported_groups(groups)
+        _apply_imported_groups(valid_groups)
+        _set_import_job(
+            job_id,
+            status="completed",
+            completed_at=datetime.now().isoformat(),
+            source=CURRENT_SOURCE,
+            last_updated=LAST_CONFIG_UPDATE,
+            total_groups=len(CURRENT_GROUPS),
+            message=f"{len(valid_groups)} groupes importés et mappés",
+        )
+    except HTTPException as e:
+        _set_import_job(job_id, status="failed", completed_at=datetime.now().isoformat(), error=str(e.detail))
+    except Exception as e:
+        _set_import_job(job_id, status="failed", completed_at=datetime.now().isoformat(), error=f"Erreur parsing configuration: {e}")
+    finally:
+        try:
+            os.remove(file_path)
+        except Exception:
+            pass
 
 
 def _matches_tag(group: Dict[str, Any], tag_filter: Optional[str]) -> bool:
@@ -1600,38 +1692,20 @@ def validate_group(draft: GroupDraft, request: Request):
 async def upload_config(request: Request, file: Optional[UploadFile] = File(None)):
     """Charge les groupes AAD et mappe les rôles vers les built-in Azure."""
     _require_role(request, ["admin"])
-    global CURRENT_GROUPS, CURRENT_SOURCE, LAST_CONFIG_UPDATE
     try:
         content_type = (request.headers.get("content-type") or "").lower()
-        groups: List[RBACConfig] = []
-        role_map: Dict[str, str] = {}
+        groups: List[RBACConfig]
 
         if file is not None:
             filename = str(file.filename or "").lower()
             uploaded_type = str(file.content_type or "").lower()
             if filename.endswith(".json") or "application/json" in uploaded_type:
                 payload = json.loads((await file.read()).decode("utf-8", errors="ignore"))
-
-                if isinstance(payload, dict) and isinstance(payload.get("groups"), list):
-                    rows = payload["groups"]
-                    role_map = _normalize_role_map(payload.get("role_mappings") or payload.get("role_mapping"))
-                elif isinstance(payload, dict) and isinstance(payload.get("value"), list):
-                    rows = payload["value"]
-                    role_map = _normalize_role_map(payload.get("role_mappings") or payload.get("role_mapping"))
-                elif isinstance(payload, list):
-                    rows = payload
-                else:
-                    raise HTTPException(
-                        status_code=400,
-                        detail="JSON invalide: attendu liste, objet {groups: []} ou objet Graph {value: []}",
-                    )
-
-                groups = [_normalize_group_row(row, role_map=role_map, idx=idx) for idx, row in enumerate(rows)]
+                groups = _parse_json_payload(payload)
             else:
                 wrapper = io.TextIOWrapper(file.file, encoding="utf-8", errors="ignore", newline="")
                 try:
-                    reader = csv.DictReader(wrapper)
-                    groups = [_normalize_group_row(row, idx=idx) for idx, row in enumerate(reader)]
+                    groups = _parse_csv_stream(wrapper)
                 finally:
                     try:
                         wrapper.detach()
@@ -1639,39 +1713,15 @@ async def upload_config(request: Request, file: Optional[UploadFile] = File(None
                         pass
         elif "application/json" in content_type:
             payload = await request.json()
-
-            if isinstance(payload, dict) and isinstance(payload.get("groups"), list):
-                rows = payload["groups"]
-                role_map = _normalize_role_map(payload.get("role_mappings") or payload.get("role_mapping"))
-            elif isinstance(payload, dict) and isinstance(payload.get("value"), list):
-                rows = payload["value"]
-                role_map = _normalize_role_map(payload.get("role_mappings") or payload.get("role_mapping"))
-            elif isinstance(payload, list):
-                rows = payload
-            else:
-                raise HTTPException(
-                    status_code=400,
-                    detail="JSON invalide: attendu liste, objet {groups: []} ou objet Graph {value: []}",
-                )
-
-            groups = [_normalize_group_row(row, role_map=role_map, idx=idx) for idx, row in enumerate(rows)]
+            groups = _parse_json_payload(payload)
         else:
             raw = await request.body()
             content = raw.decode("utf-8", errors="ignore")
             from io import StringIO
-            reader = csv.DictReader(StringIO(content))
-            groups = [_normalize_group_row(row, idx=idx) for idx, row in enumerate(reader)]
+            groups = _parse_csv_stream(StringIO(content))
 
-        valid_groups = [
-            g for g in groups
-            if g.group_id and g.display_name
-        ]
-        if not valid_groups:
-            raise HTTPException(status_code=400, detail="Aucun groupe valide trouvé dans la payload")
-
-        CURRENT_GROUPS = [g.dict() for g in valid_groups]
-        CURRENT_SOURCE = "uploaded"
-        LAST_CONFIG_UPDATE = datetime.now().isoformat()
+        valid_groups = _validate_imported_groups(groups)
+        _apply_imported_groups(valid_groups)
 
         return {
             "status": "success",
@@ -1689,6 +1739,42 @@ async def upload_config(request: Request, file: Optional[UploadFile] = File(None
 @app.post("/aad/load-groups", summary="Charger les groupes AAD + mapping built-in")
 async def aad_load_groups(request: Request):
     return await upload_config(request)
+
+
+@app.post("/upload-config/async", summary="Importer configuration AD personnalisée en arrière-plan")
+async def upload_config_async(request: Request, file: UploadFile = File(...)):
+    _require_role(request, ["admin"])
+    filename = str(file.filename or "").lower()
+    uploaded_type = str(file.content_type or "").lower()
+    file_kind = "json" if filename.endswith(".json") or "application/json" in uploaded_type else "csv"
+    suffix = ".json" if file_kind == "json" else ".csv"
+    with tempfile.NamedTemporaryFile(delete=False, suffix=suffix) as tmp:
+        while True:
+            chunk = await file.read(1024 * 1024)
+            if not chunk:
+                break
+            tmp.write(chunk)
+        file_path = tmp.name
+
+    job_id = uuid.uuid4().hex
+    _set_import_job(
+        job_id,
+        status="queued",
+        created_at=datetime.now().isoformat(),
+        filename=file.filename or "",
+        file_kind=file_kind,
+    )
+    IMPORT_EXECUTOR.submit(_run_import_job, job_id, file_path, file_kind)
+    return {"status": "accepted", "job_id": job_id}
+
+
+@app.get("/upload-config/jobs/{job_id}", summary="Statut d'un import de configuration")
+def get_upload_job(job_id: str, request: Request):
+    _require_role(request, ["admin", "user"])
+    job = _get_import_job(job_id)
+    if not job:
+        raise HTTPException(status_code=404, detail="Job d'import introuvable")
+    return {"status": "success", "job": job}
 
 
 @app.post("/aad/sync-azure", summary="Synchroniser la configuration depuis Azure CLI")

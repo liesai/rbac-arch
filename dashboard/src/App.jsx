@@ -116,6 +116,7 @@ export default function App() {
   const [risksData, setRisksData] = useState(null);
   const [loading, setLoading] = useState(false);
   const [uploading, setUploading] = useState(false);
+  const [importJob, setImportJob] = useState(null);
   const [configSource, setConfigSource] = useState("default");
   const [topRisks, setTopRisks] = useState([]);
   const [overrideSuggestions, setOverrideSuggestions] = useState([]);
@@ -147,6 +148,36 @@ export default function App() {
       void refreshOverrideSuggestions();
     }
   }, [route, dashboardTab, overrideSuggestions.length, catalogLoading]);
+
+  useEffect(() => {
+    if (!importJob?.job_id) return undefined;
+    if (importJob.status === "completed" || importJob.status === "failed") return undefined;
+
+    const timer = window.setInterval(async () => {
+      try {
+        const res = await fetch(`${apiEndpoint}/upload-config/jobs/${importJob.job_id}`);
+        if (!res.ok) throw new Error(`Import job poll failed: ${res.status}`);
+        const body = await res.json();
+        const job = body?.job || null;
+        if (!job) return;
+        setImportJob(job);
+
+        if (job.status === "completed") {
+          setUploading(false);
+          toast.success(job.message || `Import termine: ${job.total_groups || 0} groupes`);
+          await refreshAll();
+        } else if (job.status === "failed") {
+          setUploading(false);
+          toast.error(job.error || "Import echoue");
+        }
+      } catch (err) {
+        setUploading(false);
+        toast.error(String(err));
+      }
+    }, 1500);
+
+    return () => window.clearInterval(timer);
+  }, [apiEndpoint, importJob?.job_id, importJob?.status]);
 
   useEffect(() => {
     function handlePopState() {
@@ -238,8 +269,9 @@ export default function App() {
     if (!file) return;
 
     setUploading(true);
+    let startedAsync = false;
     try {
-      const endpoint = `${apiEndpoint}/aad/load-groups`;
+      const endpoint = `${apiEndpoint}/upload-config/async`;
       const formData = new FormData();
       formData.append("file", file);
       const res = await fetch(endpoint, {
@@ -257,12 +289,22 @@ export default function App() {
         throw new Error(`Import failed: ${detail}`);
       }
       const payload = await res.json();
-      toast.success(payload?.message || "Import AAD réussi");
-      await refreshAll();
+      if (payload?.job_id) {
+        startedAsync = true;
+        setImportJob({ job_id: payload.job_id, status: "queued" });
+        toast.success("Import lance en arriere-plan");
+      } else {
+        toast.success(payload?.message || "Import AAD reussi");
+        setImportJob(null);
+        await refreshAll();
+      }
     } catch (err) {
+      setImportJob(null);
       toast.error(String(err));
     } finally {
-      setUploading(false);
+      if (!startedAsync) {
+        setUploading(false);
+      }
     }
   }
 
@@ -445,6 +487,17 @@ export default function App() {
             <span className="rounded-full bg-slate-900 px-3 py-1.5 text-xs font-semibold tracking-wide text-white">
               Source: {configSource}
             </span>
+            {importJob?.job_id ? (
+              <span className={`rounded-full px-3 py-1.5 text-xs font-semibold tracking-wide ${
+                importJob.status === "failed"
+                  ? "bg-red-100 text-red-700"
+                  : importJob.status === "completed"
+                    ? "bg-emerald-100 text-emerald-700"
+                    : "bg-amber-100 text-amber-800"
+              }`}>
+                Import: {importJob.status}{importJob.total_groups ? ` (${importJob.total_groups} groupes)` : ""}
+              </span>
+            ) : null}
             {route === "dashboard" ? (
               <>
             <label className={`inline-flex min-h-11 min-w-[170px] cursor-pointer items-center justify-center ${CONTROL_CLASS}`}>
