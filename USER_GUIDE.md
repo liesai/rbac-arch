@@ -190,7 +190,8 @@ Aujourd’hui, il ne couvre pas encore :
 En mode Docker :
 
 - `Sync Azure` dépend d’une session `az login` disponible sur la machine hôte
-- la stack monte `${HOME}/.azure` dans le conteneur API
+- la stack monte `${HOME}/.azure` dans `/azure-config`
+- l’API utilise `AZURE_CONFIG_DIR=/azure-config`
 
 ## Fichiers utiles
 

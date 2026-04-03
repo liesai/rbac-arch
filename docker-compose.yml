@@ -4,20 +4,20 @@ services:
       context: .
       dockerfile: Dockerfile.api
     container_name: rbac-arch-api
+    environment:
+      AZURE_CONFIG_DIR: /azure-config
     ports:
       - "8110:8110"
     volumes:
       - ./config:/app/config
       - ./aad-groups-rbac.json:/app/aad-groups-rbac.json
-      - ${HOME}/.azure:/root/.azure:ro
+      - ${HOME}/.azure:/azure-config
     restart: unless-stopped
 
   dashboard:
     build:
       context: .
       dockerfile: Dockerfile.dashboard
-      args:
-        NPM_INSTALL_MODE: ${NPM_INSTALL_MODE:-online}
     container_name: rbac-arch-dashboard
     depends_on:
       - api
