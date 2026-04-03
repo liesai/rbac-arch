@@ -143,6 +143,12 @@ export default function App() {
   }, []);
 
   useEffect(() => {
+    if (route === "dashboard" && dashboardTab === "overrides" && overrideSuggestions.length === 0 && !catalogLoading) {
+      void refreshOverrideSuggestions();
+    }
+  }, [route, dashboardTab, overrideSuggestions.length, catalogLoading]);
+
+  useEffect(() => {
     function handlePopState() {
       setRoute(window.location.pathname === "/policy-studio" ? "policy" : "dashboard");
     }
@@ -184,31 +190,27 @@ export default function App() {
       findingsQuery.set("findings_page", String(findingsPage));
       findingsQuery.set("findings_page_size", "25");
       findingsQuery.set("findings_severity", riskSeverityFilter);
-      const [matrixRes, riskRes, configRes, overrideRes] = await Promise.all([
+      const [matrixRes, riskRes, configRes] = await Promise.all([
         fetch(`${apiEndpoint}/generate-matrix?${query.toString()}`, {
           method: "POST",
           headers: { "Content-Type": "application/json" },
         }),
         fetch(`${apiEndpoint}/compliance-check?${findingsQuery.toString()}`),
         fetch(`${apiEndpoint}/config`),
-        fetch(`${apiEndpoint}/policy/group-catalog/suggest-overrides?only_unmatched=true`),
       ]);
 
       if (!matrixRes.ok) throw new Error(`Matrix API failed: ${matrixRes.status}`);
       if (!riskRes.ok) throw new Error(`Risk API failed: ${riskRes.status}`);
       if (!configRes.ok) throw new Error(`Config API failed: ${configRes.status}`);
-      if (!overrideRes.ok) throw new Error(`Override suggestions API failed: ${overrideRes.status}`);
 
       const matrixJson = await matrixRes.json();
       const riskJson = await riskRes.json();
       const configJson = await configRes.json();
-      const overrideJson = await overrideRes.json();
       setMatrixData(normalizeMatrix(matrixJson));
       setMatrixSummary(matrixJson?.matrix?.summary || null);
       setRisksData(riskJson);
       setTopRisks(matrixJson?.matrix?.summary?.top_risks || []);
       setConfigSource(configJson?.source || "default");
-      setOverrideSuggestions(Array.isArray(overrideJson?.suggestions) ? overrideJson.suggestions : []);
     } catch (err) {
       toast.error(String(err));
     } finally {
@@ -237,13 +239,12 @@ export default function App() {
 
     setUploading(true);
     try {
-      const text = await file.text();
-      const isJson = file.name.toLowerCase().endsWith(".json");
       const endpoint = `${apiEndpoint}/aad/load-groups`;
+      const formData = new FormData();
+      formData.append("file", file);
       const res = await fetch(endpoint, {
         method: "POST",
-        headers: { "Content-Type": isJson ? "application/json" : "text/csv" },
-        body: text,
+        body: formData,
       });
       if (!res.ok) {
         let detail = `${res.status}`;
@@ -366,6 +367,7 @@ export default function App() {
   const recommendationsData = Array.isArray(risksData?.recommendations) ? risksData.recommendations : [];
   const matrixPagination = matrixSummary?.pagination || null;
   const findingsPagination = risksData?.findings_pagination || null;
+  const detailScope = risksData?.detail_scope || null;
 
   const filteredFindings = findingsData;
   const matrixVisible = matrixData;
@@ -705,6 +707,12 @@ export default function App() {
               <div className="text-xs text-slate-500">
                 Findings visibles: {filteredFindings.length} / {risksData?.findings_total || filteredFindings.length} | Recommandations: {recommendationsData.length}
               </div>
+
+              {detailScope?.limited ? (
+                <div className="rounded-xl border border-amber-200 bg-amber-50 px-4 py-3 text-sm text-amber-900">
+                  Analyse detaillee limitee a {detailScope.detailed_groups_analyzed} groupes sur {risksData?.total_groups_scanned || detailScope.detailed_groups_analyzed} pour garder l'interface exploitable. Utilise les filtres ou la recherche pour cibler un sous-ensemble plus precis.
+                </div>
+              ) : null}
 
               {filteredFindings.length > 0 ? (
                 <div className="space-y-2">

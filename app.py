@@ -1,8 +1,9 @@
-from fastapi import FastAPI, HTTPException, Request
+from fastapi import FastAPI, HTTPException, Request, UploadFile, File
 from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel, Field
 from typing import List, Dict, Optional, Any
 import csv
+import io
 from datetime import datetime
 from copy import deepcopy
 from concurrent.futures import ThreadPoolExecutor, as_completed
@@ -698,6 +699,10 @@ def _config_payload(include_groups: bool = False) -> Dict[str, Any]:
     if include_groups:
         payload["groups"] = deepcopy(CURRENT_GROUPS)
     return payload
+
+
+def _current_groups() -> List[Dict[str, Any]]:
+    return CURRENT_GROUPS
 
 
 def _matches_tag(group: Dict[str, Any], tag_filter: Optional[str]) -> bool:
@@ -1592,7 +1597,7 @@ def validate_group(draft: GroupDraft, request: Request):
     return {"status": "success", "validation": result}
 
 @app.post("/upload-config", summary="Importer configuration AD personnalisée")
-async def upload_config(request: Request):
+async def upload_config(request: Request, file: Optional[UploadFile] = File(None)):
     """Charge les groupes AAD et mappe les rôles vers les built-in Azure."""
     _require_role(request, ["admin"])
     global CURRENT_GROUPS, CURRENT_SOURCE, LAST_CONFIG_UPDATE
@@ -1601,7 +1606,38 @@ async def upload_config(request: Request):
         groups: List[RBACConfig] = []
         role_map: Dict[str, str] = {}
 
-        if "application/json" in content_type:
+        if file is not None:
+            filename = str(file.filename or "").lower()
+            uploaded_type = str(file.content_type or "").lower()
+            if filename.endswith(".json") or "application/json" in uploaded_type:
+                payload = json.loads((await file.read()).decode("utf-8", errors="ignore"))
+
+                if isinstance(payload, dict) and isinstance(payload.get("groups"), list):
+                    rows = payload["groups"]
+                    role_map = _normalize_role_map(payload.get("role_mappings") or payload.get("role_mapping"))
+                elif isinstance(payload, dict) and isinstance(payload.get("value"), list):
+                    rows = payload["value"]
+                    role_map = _normalize_role_map(payload.get("role_mappings") or payload.get("role_mapping"))
+                elif isinstance(payload, list):
+                    rows = payload
+                else:
+                    raise HTTPException(
+                        status_code=400,
+                        detail="JSON invalide: attendu liste, objet {groups: []} ou objet Graph {value: []}",
+                    )
+
+                groups = [_normalize_group_row(row, role_map=role_map, idx=idx) for idx, row in enumerate(rows)]
+            else:
+                wrapper = io.TextIOWrapper(file.file, encoding="utf-8", errors="ignore", newline="")
+                try:
+                    reader = csv.DictReader(wrapper)
+                    groups = [_normalize_group_row(row, idx=idx) for idx, row in enumerate(reader)]
+                finally:
+                    try:
+                        wrapper.detach()
+                    except Exception:
+                        pass
+        elif "application/json" in content_type:
             payload = await request.json()
 
             if isinstance(payload, dict) and isinstance(payload.get("groups"), list):
@@ -1815,10 +1851,10 @@ def generate_access_matrix(
     - Excel (CSV): format compatible avec Microsoft Excel
     """
     _require_role(request, ["admin", "user"])
-    config = get_config()
+    groups = _current_groups()
     normalized_filter = {_normalize_role_name(role) for role in (roles_filter or [])}
     selected_groups = _apply_group_filters(
-        groups=config["groups"],
+        groups=groups,
         owner_filter=owner_filter,
         tag_filter=tag_filter,
         scope_filter=scope_filter,
@@ -1884,7 +1920,7 @@ def generate_access_matrix(
     top_risks = sorted(scored_groups, key=lambda r: r["score"], reverse=True)[:5]
     matrix["summary"] = {
         "total_groups_analyzed": len(sorted_groups),
-        "total_groups_before_filter": len(config["groups"]),
+        "total_groups_before_filter": len(groups),
         "unique_roles_assigned": list(set(
             role for g in sorted_groups for role in g["role_assignments"]
         )),
@@ -1912,14 +1948,14 @@ def generate_access_matrix(
 @app.get("/generate-matrix/json")
 def generate_matrix_json():
     """Génère et retourne la matrice JSON (téléchargement direct)"""
-    config = get_config()
+    groups = _current_groups()
     matrix_data = {
         "metadata": {"generated_at": datetime.now().isoformat(), "tool": "RBAC Auditor 1.0"},
         "groups": [],
-        "summary": {"total_groups": len(config["groups"]), "unique_roles": list(set(role for g in config["groups"] for role in g["role_assignments"]))}
+        "summary": {"total_groups": len(groups), "unique_roles": list(set(role for g in groups for role in g["role_assignments"]))}
     }
     
-    for group in config["groups"]:
+    for group in groups:
         roles_list = []
         for role_name in group["role_assignments"]:
             info = ROLES_MAPPING.get(role_name, {})
@@ -2001,9 +2037,9 @@ def compliance_check(
     - Recommandations de remédiation
     """
     _require_role(request, ["admin", "user"])
-    config = get_config()
+    groups = _current_groups()
     selected_groups = _apply_group_filters(
-        groups=config["groups"],
+        groups=groups,
         owner_filter=owner_filter,
         tag_filter=tag_filter,
         scope_filter=scope_filter,
@@ -2019,8 +2055,11 @@ def compliance_check(
     recommendations = []
     findings = []
     governance_context = []
+    detail_group_limit = 5000
+    detail_limited = len(selected_groups) > detail_group_limit
+    detailed_groups = selected_groups[:detail_group_limit] if detail_limited else selected_groups
     
-    for group in selected_groups:
+    for group in detailed_groups:
         group_score = _group_risk_score(group)
         governance = _resolve_governance_context(group, policy)
         governance_context.append({
@@ -2073,7 +2112,7 @@ def compliance_check(
     return {
         "status": "report_ready",
         "total_groups_scanned": len(selected_groups),
-        "total_groups_before_filter": len(config["groups"]),
+        "total_groups_before_filter": len(groups),
         "risks_detected": len(risks),
         "high_risk_count": sum(1 for r in risks if r["risk_level"] == "HIGH" or r["risk_level"] == "CRITICAL"),
         "risks": risks,
@@ -2111,6 +2150,11 @@ def compliance_check(
             "max_members": max_members,
             "findings_severity": findings_severity,
         },
+        "detail_scope": {
+            "limited": detail_limited,
+            "detailed_groups_analyzed": len(detailed_groups),
+            "max_detailed_groups": detail_group_limit,
+        },
     }
 
 @app.get("/export", summary="Exporter la matrice complète")
@@ -2119,10 +2163,10 @@ def export_matrix(format: str = "csv"):
     Exporte la matrice actuelle au format demandé.
     Formats supportés: csv (Excel compatible), json
     """
-    config = get_config()
+    groups = _current_groups()
     rows = []
     
-    for group in config["groups"]:
+    for group in groups:
         # Ligne avec les permissions agrégées
         data_access = any(
             ROLES_MAPPING.get(role, {}).get("data_access", False)
