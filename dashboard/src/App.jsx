@@ -221,7 +221,7 @@ export default function App() {
       findingsQuery.set("findings_page", String(findingsPage));
       findingsQuery.set("findings_page_size", "25");
       findingsQuery.set("findings_severity", riskSeverityFilter);
-      const [matrixRes, riskRes, configRes] = await Promise.all([
+      const [matrixResult, riskResult, configResult] = await Promise.allSettled([
         fetch(`${apiEndpoint}/generate-matrix?${query.toString()}`, {
           method: "POST",
           headers: { "Content-Type": "application/json" },
@@ -230,18 +230,40 @@ export default function App() {
         fetch(`${apiEndpoint}/config`),
       ]);
 
-      if (!matrixRes.ok) throw new Error(`Matrix API failed: ${matrixRes.status}`);
-      if (!riskRes.ok) throw new Error(`Risk API failed: ${riskRes.status}`);
-      if (!configRes.ok) throw new Error(`Config API failed: ${configRes.status}`);
+      if (matrixResult.status === "fulfilled") {
+        const matrixRes = matrixResult.value;
+        if (!matrixRes.ok) {
+          throw new Error(`Matrix API failed: ${matrixRes.status}`);
+        }
+        const matrixJson = await matrixRes.json();
+        setMatrixData(normalizeMatrix(matrixJson));
+        setMatrixSummary(matrixJson?.matrix?.summary || null);
+        setTopRisks(matrixJson?.matrix?.summary?.top_risks || []);
+      }
 
-      const matrixJson = await matrixRes.json();
-      const riskJson = await riskRes.json();
-      const configJson = await configRes.json();
-      setMatrixData(normalizeMatrix(matrixJson));
-      setMatrixSummary(matrixJson?.matrix?.summary || null);
-      setRisksData(riskJson);
-      setTopRisks(matrixJson?.matrix?.summary?.top_risks || []);
-      setConfigSource(configJson?.source || "default");
+      if (riskResult.status === "fulfilled") {
+        const riskRes = riskResult.value;
+        if (riskRes.ok) {
+          const riskJson = await riskRes.json();
+          setRisksData(riskJson);
+        } else {
+          toast.error(`Risk API failed: ${riskRes.status}`);
+        }
+      } else {
+        toast.error(`Risk API failed: ${riskResult.reason}`);
+      }
+
+      if (configResult.status === "fulfilled") {
+        const configRes = configResult.value;
+        if (configRes.ok) {
+          const configJson = await configRes.json();
+          setConfigSource(configJson?.source || "default");
+        } else {
+          toast.error(`Config API failed: ${configRes.status}`);
+        }
+      } else {
+        toast.error(`Config API failed: ${configResult.reason}`);
+      }
     } catch (err) {
       toast.error(String(err));
     } finally {

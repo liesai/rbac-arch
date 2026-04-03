@@ -2160,7 +2160,7 @@ def compliance_check(
             "max_scope_level": governance.get("max_scope_level", ""),
             "recommended_controls": governance.get("recommended_controls", []),
         })
-        group_findings = _build_group_findings(group, policy, config.get("source", "default"))
+        group_findings = _build_group_findings(group, policy, CURRENT_SOURCE)
         findings.extend(group_findings)
 
         for finding in group_findings:
