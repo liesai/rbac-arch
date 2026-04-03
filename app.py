@@ -687,15 +687,17 @@ def _normalize_group_row(row: Dict[str, Any], role_map: Optional[Dict[str, str]]
     )
 
 
-def _config_payload() -> Dict[str, Any]:
-    return {
+def _config_payload(include_groups: bool = False) -> Dict[str, Any]:
+    payload = {
         "roles": [{"role_name": role, "description": ROLE_DESCRIPTIONS.get(role, "")} for role in ROLES_MAPPING.keys()],
-        "groups": deepcopy(CURRENT_GROUPS),
         "source": CURRENT_SOURCE,
         "last_updated": LAST_CONFIG_UPDATE,
         "total_roles": len(ROLES_MAPPING),
         "total_groups": len(CURRENT_GROUPS),
     }
+    if include_groups:
+        payload["groups"] = deepcopy(CURRENT_GROUPS)
+    return payload
 
 
 def _matches_tag(group: Dict[str, Any], tag_filter: Optional[str]) -> bool:
@@ -1638,9 +1640,9 @@ async def upload_config(request: Request):
         return {
             "status": "success",
             "message": f"{len(valid_groups)} groupes importés et mappés",
-            "groups": CURRENT_GROUPS,
             "source": CURRENT_SOURCE,
             "last_updated": LAST_CONFIG_UPDATE,
+            "total_groups": len(CURRENT_GROUPS),
         }
     except HTTPException:
         raise
@@ -1779,7 +1781,13 @@ def reset_config(request: Request):
     CURRENT_GROUPS = deepcopy(INITIAL_GROUPS)
     CURRENT_SOURCE = "default"
     LAST_CONFIG_UPDATE = datetime.now().isoformat()
-    return {"status": "success", "message": "Configuration réinitialisée", "groups": CURRENT_GROUPS}
+    return {
+        "status": "success",
+        "message": "Configuration réinitialisée",
+        "source": CURRENT_SOURCE,
+        "last_updated": LAST_CONFIG_UPDATE,
+        "total_groups": len(CURRENT_GROUPS),
+    }
 
 @app.post("/generate-matrix", summary="Générer matrice d'accès complète")
 def generate_access_matrix(
