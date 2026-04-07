@@ -1,4 +1,4 @@
-from fastapi import FastAPI, HTTPException, Request, UploadFile, File
+from fastapi import FastAPI, HTTPException, Request, UploadFile, File, Response
 from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel, Field
 from typing import List, Dict, Optional, Any
@@ -1643,7 +1643,7 @@ def export_groups_from_blueprint(payload: GroupExportRequest, request: Request):
     policy = _load_policy()
     rows: List[Dict[str, Any]] = []
     for idx, draft in enumerate(payload.groups):
-        base = draft.dict()
+        base = draft.model_dump()
         if not base.get("group_id"):
             values = {
                 "domain": base.get("domain", ""),
@@ -1737,8 +1737,8 @@ async def upload_config(request: Request, file: Optional[UploadFile] = File(None
 
 
 @app.post("/aad/load-groups", summary="Charger les groupes AAD + mapping built-in")
-async def aad_load_groups(request: Request):
-    return await upload_config(request)
+async def aad_load_groups(request: Request, file: Optional[UploadFile] = File(None)):
+    return await upload_config(request, file)
 
 
 @app.post("/upload-config/async", summary="Importer configuration AD personnalisée en arrière-plan")
@@ -1856,7 +1856,7 @@ def aad_sync_azure(request: Request, max_groups: int = 200, workers: int = 8):
             tags=tags,
             naming_ok=naming_ok,
             last_review_days=0,
-        ).dict()
+        ).model_dump()
 
     safe_workers = max(1, min(32, workers))
     enriched: List[Dict[str, Any]] = [None] * len(raw_groups)  # type: ignore
@@ -1882,7 +1882,7 @@ def aad_sync_azure(request: Request, max_groups: int = 200, workers: int = 8):
                     tags={},
                     naming_ok=True,
                     last_review_days=0,
-                ).dict()
+                ).model_dump()
 
     CURRENT_GROUPS = [g for g in enriched if g]
     CURRENT_SOURCE = "azure_sync"
@@ -2060,7 +2060,11 @@ def generate_matrix_json():
             "roles": roles_list
         })
     
-    return matrix_data, {"filename": "rbac-matrix.json", "content_type": "application/json"}
+    return Response(
+        content=json.dumps(matrix_data, ensure_ascii=False),
+        media_type="application/json",
+        headers={"Content-Disposition": 'attachment; filename="rbac-matrix.json"'},
+    )
 
 @app.get("/simulate", summary="Simuler assignment de rôle à un groupe")
 def simulate_role_assignment(
@@ -2285,15 +2289,32 @@ def export_matrix(format: str = "csv"):
         # Convertir en CSV simple (Excel compatible)
         import io
         csv_output = io.StringIO()
-        fieldnames = list(rows[0].keys())
+        fieldnames = [
+            "Group_ID",
+            "Group_Display_Name",
+            "Members_Count",
+            "Role_1",
+            "Role_2",
+            "Permission_Data_Access",
+            "Permission_Config_Modify",
+            "Permission_Security_Admin",
+            "Permitted_Billing_Read",
+        ]
         writer = csv.DictWriter(csv_output, fieldnames=fieldnames)
         writer.writeheader()
         writer.writerows(rows)
-        return csv_output.getvalue(), {"content_type": "text/csv", "filename": "rbac_matrix.csv"}
+        return Response(
+            content=csv_output.getvalue(),
+            media_type="text/csv",
+            headers={"Content-Disposition": 'attachment; filename="rbac_matrix.csv"'},
+        )
     else:
         # JSON
-        import json
-        return json.dumps(rows, indent=2), {"content_type": "application/json", "filename": "rbac_matrix.json"}
+        return Response(
+            content=json.dumps(rows, ensure_ascii=False, indent=2),
+            media_type="application/json",
+            headers={"Content-Disposition": 'attachment; filename="rbac_matrix.json"'},
+        )
 
 def count_privilege_risks(config, matrix):
     """Compte les privilèges risqués (simplifié)"""
