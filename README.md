@@ -115,6 +115,43 @@ Selon ton contexte, il peut aussi être utile de sélectionner explicitement la 
 az account set --subscription "<subscription-id-ou-nom>"
 ```
 
+### Export owner + assignations RBAC
+
+Pour préparer un fichier compatible avec `Importer AAD (JSON/CSV)` en ciblant les groupes dont une personne est owner :
+
+```bash
+./scripts/export_owned_groups_rbac.py \
+  --owner "prenom.nom@contoso.com" \
+  --output owned-groups-rbac.json \
+  --format json
+```
+
+Le script :
+
+- liste les subscriptions visibles par le compte `az login`
+- résout l’utilisateur owner
+- récupère les groupes possédés par cette personne via Microsoft Graph
+- récupère les assignations Azure RBAC de ces groupes sur les subscriptions accessibles
+- produit un objet `{ "groups": [...] }` directement importable par `/aad/load-groups`
+
+Options utiles :
+
+```bash
+# CSV compatible import
+./scripts/export_owned_groups_rbac.py --owner "prenom.nom@contoso.com" --format csv --output owned-groups-rbac.csv
+
+# Inclure aussi les groupes possédés sans assignation RBAC visible
+./scripts/export_owned_groups_rbac.py --owner "prenom.nom@contoso.com" --include-empty
+
+# Eviter les appels de comptage membres si le tenant est volumineux
+./scripts/export_owned_groups_rbac.py --owner "prenom.nom@contoso.com" --skip-members
+
+# Fallback lent si Graph ownedObjects n'est pas autorisé
+./scripts/export_owned_groups_rbac.py --owner "prenom.nom@contoso.com" --fallback-scan-all-groups
+```
+
+Le JSON contient `role_assignments` pour l'import actuel et `assignment_details` pour conserver le détail rôle + scope + subscription. Aujourd'hui, l'application agrège les rôles au niveau groupe et utilise un `scope` représentatif.
+
 ## Lancement
 
 Mode local/dev :
