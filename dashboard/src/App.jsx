@@ -129,6 +129,7 @@ export default function App() {
   const [findingsPage, setFindingsPage] = useState(1);
   const [overrideSearch, setOverrideSearch] = useState("");
   const [overrideConfidenceFilter, setOverrideConfidenceFilter] = useState("ALL");
+  const [azureGroupFilter, setAzureGroupFilter] = useState("");
   const [filters, setFilters] = useState({
     owner: "",
     tag: "",
@@ -347,7 +348,15 @@ export default function App() {
   async function handleAzureSync() {
     setUploading(true);
     try {
-      const res = await fetch(`${apiEndpoint}/aad/sync-azure?max_groups=500&workers=12`, {
+      const params = new URLSearchParams({
+        max_groups: "500",
+        workers: "12",
+      });
+      if (azureGroupFilter.trim()) {
+        params.set("group_filter", azureGroupFilter.trim());
+        params.set("filter_match", "contains");
+      }
+      const res = await fetch(`${apiEndpoint}/aad/sync-azure?${params.toString()}`, {
         method: "POST",
       });
       const body = await res.json();
@@ -538,6 +547,14 @@ export default function App() {
             >
               Rafraichir
             </button>
+            <input
+              type="search"
+              value={azureGroupFilter}
+              onChange={(e) => setAzureGroupFilter(e.target.value)}
+              className={`${CONTROL_CLASS} min-w-[180px] max-w-[240px]`}
+              placeholder="Filtre sync: PDM,IA"
+              disabled={uploading}
+            />
             <button
               onClick={() => void handleAzureSync()}
               className={`${CONTROL_CLASS} min-w-[120px]`}

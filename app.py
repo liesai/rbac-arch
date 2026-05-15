@@ -764,6 +764,53 @@ def _validate_imported_groups(groups: List[RBACConfig]) -> List[RBACConfig]:
     return valid_groups
 
 
+def _parse_group_filter_terms(group_filter: Optional[str]) -> List[str]:
+    if not group_filter:
+        return []
+    terms = [
+        part.strip()
+        for part in re.split(r"[,;|]", group_filter)
+        if part.strip()
+    ]
+    deduped: List[str] = []
+    seen = set()
+    for term in terms:
+        key = term.lower()
+        if key not in seen:
+            deduped.append(term)
+            seen.add(key)
+    return deduped
+
+
+def _escape_odata_literal(value: str) -> str:
+    return value.replace("'", "''")
+
+
+def _build_group_filter_expression(terms: List[str], match_mode: str) -> str:
+    function_name = "startswith" if match_mode == "startswith" else "contains"
+    clauses = [
+        f"{function_name}(displayName,'{_escape_odata_literal(term)}')"
+        for term in terms
+    ]
+    return " or ".join(clauses)
+
+
+def _matches_group_filter(row: Dict[str, Any], terms: List[str], match_mode: str) -> bool:
+    if not terms:
+        return True
+    display_name = str(row.get("displayName") or row.get("display_name") or row.get("name") or "")
+    group_id = str(row.get("id") or row.get("group_id") or "")
+    haystacks = [display_name.lower(), group_id.lower()]
+    for term in terms:
+        needle = term.lower()
+        if match_mode == "startswith":
+            if any(value.startswith(needle) for value in haystacks):
+                return True
+        elif any(needle in value for value in haystacks):
+            return True
+    return False
+
+
 def _run_import_job(job_id: str, file_path: str, file_kind: str) -> None:
     try:
         _set_import_job(job_id, status="running", started_at=datetime.now().isoformat())
@@ -1778,29 +1825,65 @@ def get_upload_job(job_id: str, request: Request):
 
 
 @app.post("/aad/sync-azure", summary="Synchroniser la configuration depuis Azure CLI")
-def aad_sync_azure(request: Request, max_groups: int = 200, workers: int = 8):
+def aad_sync_azure(
+    request: Request,
+    max_groups: int = 200,
+    workers: int = 8,
+    group_filter: Optional[str] = None,
+    filter_match: str = "contains",
+):
     """
     Synchronise les groupes Entra ID via Azure CLI local:
     - groups: az ad group list
     - members_count: az ad group member list
     - owners: az ad group owner list
     - role assignments + scope: az role assignment list
+
+    group_filter accepte plusieurs termes séparés par virgule, point-virgule
+    ou pipe. Exemple: group_filter=PDM,IA&filter_match=contains.
     """
     _require_role(request, ["admin"])
     global CURRENT_GROUPS, CURRENT_SOURCE, LAST_CONFIG_UPDATE
     if shutil.which("az") is None:
         raise HTTPException(status_code=503, detail="Azure CLI (az) introuvable sur cette machine.")
 
+    filter_terms = _parse_group_filter_terms(group_filter)
+    normalized_match = str(filter_match or "contains").strip().lower()
+    if normalized_match not in {"contains", "startswith"}:
+        raise HTTPException(status_code=400, detail="filter_match doit être 'contains' ou 'startswith'.")
+
+    filter_expression = _build_group_filter_expression(filter_terms, normalized_match) if filter_terms else ""
+    server_filter_applied = False
+    client_filter_applied = False
+
     try:
-        try:
-            raw_groups = _run_az_json(["ad", "group", "list", "--all"])
-        except Exception:
-            raw_groups = _run_az_json(["ad", "group", "list"])
+        if filter_expression:
+            try:
+                raw_groups = _run_az_json(["ad", "group", "list", "--filter", filter_expression])
+                server_filter_applied = True
+            except Exception:
+                try:
+                    raw_groups = _run_az_json(["ad", "group", "list", "--all"])
+                except Exception:
+                    raw_groups = _run_az_json(["ad", "group", "list"])
+        else:
+            try:
+                raw_groups = _run_az_json(["ad", "group", "list", "--all"])
+            except Exception:
+                raw_groups = _run_az_json(["ad", "group", "list"])
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"Echec récupération groupes Azure: {e}")
 
     if not isinstance(raw_groups, list):
         raise HTTPException(status_code=500, detail="Réponse az ad group list invalide.")
+
+    total_groups_returned = len(raw_groups)
+    if filter_terms and not server_filter_applied:
+        raw_groups = [
+            row for row in raw_groups
+            if isinstance(row, dict) and _matches_group_filter(row, filter_terms, normalized_match)
+        ]
+        client_filter_applied = True
 
     if max_groups > 0:
         raw_groups = raw_groups[:max_groups]
@@ -1893,6 +1976,14 @@ def aad_sync_azure(request: Request, max_groups: int = 200, workers: int = 8):
         "source": CURRENT_SOURCE,
         "last_updated": LAST_CONFIG_UPDATE,
         "total_groups": len(CURRENT_GROUPS),
+        "sync_filter": {
+            "terms": filter_terms,
+            "match": normalized_match,
+            "server_filter_applied": server_filter_applied,
+            "client_filter_applied": client_filter_applied,
+            "total_groups_returned_before_limit": total_groups_returned,
+            "filter_expression": filter_expression,
+        },
     }
 
 

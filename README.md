@@ -254,6 +254,14 @@ Direction actuelle de l’UI :
 - `POST /aad/sync-azure`
 - `POST /config/reset`
 
+Exemple de synchronisation Azure limitée aux groupes dont la nomenclature contient `PDM` ou `IA` :
+
+```bash
+curl -X POST "http://127.0.0.1:8110/aad/sync-azure?group_filter=PDM,IA&filter_match=contains&max_groups=500&workers=12"
+```
+
+`group_filter` accepte plusieurs termes séparés par virgule, point-virgule ou pipe. `filter_match` accepte `contains` ou `startswith`.
+
 ### Policy et gouvernance
 
 - `GET /policy`
