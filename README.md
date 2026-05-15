@@ -253,6 +253,7 @@ Direction actuelle de l’UI :
 - `POST /aad/load-groups`
 - `POST /aad/sync-azure`
 - `POST /aad/sync-azure/async`
+- `POST /aad/refresh-assignments/async`
 - `GET /operations`
 - `POST /config/reset`
 
@@ -272,6 +273,14 @@ curl "http://127.0.0.1:8110/operations"
 ```
 
 `max_groups=0` désactive la limite. `workers` est plafonné à `64` côté API pour éviter une saturation locale ou un throttling Azure trop agressif.
+
+Après une première sync, tu peux rafraîchir uniquement les assignations RBAC/scopes des groupes déjà chargés, sans relister tous les groupes Entra :
+
+```bash
+curl -X POST "http://127.0.0.1:8110/aad/refresh-assignments/async?scope_filter=/subscriptions/<sub-id>&workers=24&roles_only=true"
+```
+
+`roles_only=true` limite le refresh aux groupes ayant déjà au moins un rôle mappé.
 
 ### Policy et gouvernance
 

@@ -771,7 +771,7 @@ def _set_sync_job(job_id: str, **updates: Any) -> Dict[str, Any]:
         current = SYNC_JOBS.get(job_id, {}).copy()
         current.update(updates)
         current["job_id"] = job_id
-        current["type"] = "azure_sync"
+        current.setdefault("type", "azure_sync")
         SYNC_JOBS[job_id] = current
         return current.copy()
 
@@ -887,6 +887,55 @@ def _matches_group_filter(row: Dict[str, Any], terms: List[str], match_mode: str
     return False
 
 
+def _role_assignments_for_group(group_id: str, scope_filter: Optional[str] = None) -> Dict[str, Any]:
+    assignment_args = [
+        "role",
+        "assignment",
+        "list",
+        "--all",
+        "--assignee-object-id",
+        group_id,
+    ]
+    scope_needle = str(scope_filter or "").strip()
+    if scope_needle.startswith("/"):
+        assignment_args.extend(["--scope", scope_needle])
+    assignment_args.extend(["--query", "[].{role:roleDefinitionName,scope:scope}"])
+
+    role_assignments: List[str] = []
+    assignment_details: List[Dict[str, str]] = []
+    scope = "/"
+    try:
+        assignments = _run_az_json(assignment_args)
+        if isinstance(assignments, list):
+            scopes = []
+            seen_roles = set()
+            for item in assignments:
+                role_name = _normalize_role_name(str((item or {}).get("role") or ""))
+                s = str((item or {}).get("scope") or "").strip()
+                if scope_needle and scope_needle.lower() not in s.lower():
+                    continue
+                if role_name and role_name not in seen_roles:
+                    role_assignments.append(role_name)
+                    seen_roles.add(role_name)
+                if role_name:
+                    assignment_details.append({
+                        "role": role_name,
+                        "scope": s,
+                    })
+                if s:
+                    scopes.append(s)
+            if scopes:
+                scope = min(scopes, key=len)
+    except Exception:
+        pass
+
+    return {
+        "role_assignments": role_assignments,
+        "assignment_details": assignment_details,
+        "scope": scope,
+    }
+
+
 def _sync_azure_groups(
     max_groups: int = 5000,
     workers: int = 24,
@@ -982,31 +1031,7 @@ def _sync_azure_groups(
         except Exception:
             owner = ""
 
-        role_assignments: List[str] = []
-        assignment_details: List[Dict[str, str]] = []
-        scope = "/"
-        try:
-            assignments = _run_az_json(["role", "assignment", "list", "--all", "--assignee-object-id", group_id, "--query", "[].{role:roleDefinitionName,scope:scope}"])
-            if isinstance(assignments, list):
-                scopes = []
-                seen_roles = set()
-                for item in assignments:
-                    role_name = _normalize_role_name(str((item or {}).get("role") or ""))
-                    if role_name and role_name not in seen_roles:
-                        role_assignments.append(role_name)
-                        seen_roles.add(role_name)
-                    s = str((item or {}).get("scope") or "").strip()
-                    if role_name:
-                        assignment_details.append({
-                            "role": role_name,
-                            "scope": s,
-                        })
-                    if s:
-                        scopes.append(s)
-                if scopes:
-                    scope = min(scopes, key=len)
-        except Exception:
-            pass
+        assignment_payload = _role_assignments_for_group(group_id)
 
         naming_ok = bool(re.match(r"^(AAD-|GRP-)", group_id, flags=re.IGNORECASE))
         tags = _infer_tags_from_name(display_name)
@@ -1015,10 +1040,10 @@ def _sync_azure_groups(
             group_id=group_id,
             display_name=display_name,
             members_count=members_count,
-            role_assignments=role_assignments,
-            assignment_details=assignment_details,
+            role_assignments=assignment_payload["role_assignments"],
+            assignment_details=assignment_payload["assignment_details"],
             owner=owner,
-            scope=scope,
+            scope=assignment_payload["scope"],
             tags=tags,
             naming_ok=naming_ok,
             last_review_days=0,
@@ -1098,6 +1123,120 @@ def _run_azure_sync_job(job_id: str, max_groups: int, workers: int, group_filter
             workers=workers,
             group_filter=group_filter,
             filter_match=filter_match,
+            job_id=job_id,
+        )
+    except HTTPException as e:
+        _set_sync_job(job_id, status="failed", phase="failed", completed_at=datetime.now().isoformat(), error=str(e.detail))
+    except Exception as e:
+        _set_sync_job(job_id, status="failed", phase="failed", completed_at=datetime.now().isoformat(), error=str(e))
+
+
+def _refresh_current_group_assignments(
+    workers: int = 24,
+    scope_filter: Optional[str] = None,
+    roles_only: bool = False,
+    job_id: Optional[str] = None,
+) -> Dict[str, Any]:
+    global CURRENT_GROUPS, CURRENT_SOURCE, LAST_CONFIG_UPDATE
+    if shutil.which("az") is None:
+        raise HTTPException(status_code=503, detail="Azure CLI (az) introuvable sur cette machine.")
+
+    try:
+        workers = int(workers or 24)
+    except Exception:
+        workers = 24
+    source_groups = [
+        deepcopy(group)
+        for group in CURRENT_GROUPS
+        if not roles_only or group.get("role_assignments")
+    ]
+    if job_id:
+        _set_sync_job(
+            job_id,
+            status="running",
+            phase="refreshing_assignments",
+            started_at=datetime.now().isoformat(),
+            candidate_groups=len(source_groups),
+            progress={"current": 0, "total": len(source_groups)},
+        )
+
+    def refresh_group(group: Dict[str, Any]) -> Dict[str, Any]:
+        next_group = deepcopy(group)
+        group_id = str(next_group.get("group_id") or "")
+        if not group_id:
+            return next_group
+        assignment_payload = _role_assignments_for_group(group_id, scope_filter=scope_filter)
+        next_group["role_assignments"] = assignment_payload["role_assignments"]
+        next_group["assignment_details"] = assignment_payload["assignment_details"]
+        if assignment_payload["assignment_details"]:
+            next_group["scope"] = assignment_payload["scope"]
+        return next_group
+
+    safe_workers = max(1, min(64, workers))
+    refreshed: List[Dict[str, Any]] = [None] * len(source_groups)  # type: ignore
+    completed = 0
+    with ThreadPoolExecutor(max_workers=safe_workers) as pool:
+        future_map = {
+            pool.submit(refresh_group, group): idx
+            for idx, group in enumerate(source_groups)
+        }
+        for future in as_completed(future_map):
+            idx = future_map[future]
+            try:
+                refreshed[idx] = future.result()
+            except Exception:
+                refreshed[idx] = source_groups[idx]
+            completed += 1
+            if job_id and (completed == len(source_groups) or completed % 25 == 0):
+                _set_sync_job(
+                    job_id,
+                    processed_groups=completed,
+                    progress={"current": completed, "total": len(source_groups)},
+                )
+
+    if roles_only:
+        refreshed_by_id = {str(group.get("group_id")): group for group in refreshed if group}
+        CURRENT_GROUPS = [
+            refreshed_by_id.get(str(group.get("group_id")), group)
+            for group in CURRENT_GROUPS
+        ]
+    else:
+        CURRENT_GROUPS = [group for group in refreshed if group]
+    CURRENT_SOURCE = "assignment_refresh"
+    LAST_CONFIG_UPDATE = datetime.now().isoformat()
+    message = f"RBAC assignment refresh OK: {len(source_groups)} groupes"
+    result = {
+        "status": "success",
+        "message": message,
+        "source": CURRENT_SOURCE,
+        "last_updated": LAST_CONFIG_UPDATE,
+        "total_groups": len(CURRENT_GROUPS),
+        "refreshed_groups": len(source_groups),
+        "scope_filter": scope_filter or "",
+        "roles_only": roles_only,
+    }
+    if job_id:
+        _set_sync_job(
+            job_id,
+            status="completed",
+            phase="completed",
+            completed_at=datetime.now().isoformat(),
+            source=CURRENT_SOURCE,
+            last_updated=LAST_CONFIG_UPDATE,
+            total_groups=len(CURRENT_GROUPS),
+            refreshed_groups=len(source_groups),
+            progress={"current": len(source_groups), "total": len(source_groups)},
+            message=message,
+        )
+    return result
+
+
+def _run_assignment_refresh_job(job_id: str, workers: int, scope_filter: Optional[str], roles_only: bool) -> None:
+    try:
+        _refresh_current_group_assignments(
+            workers=workers,
+            scope_filter=scope_filter,
+            roles_only=roles_only,
             job_id=job_id,
         )
     except HTTPException as e:
@@ -1335,6 +1474,7 @@ def _apply_group_filters(
     scope_filter: Optional[str] = None,
     naming_only: bool = False,
     orphan_only: bool = False,
+    roles_only: bool = False,
     min_members: Optional[int] = None,
     max_members: Optional[int] = None,
 ) -> List[Dict[str, Any]]:
@@ -1355,6 +1495,8 @@ def _apply_group_filters(
         if naming_only and not naming_ok:
             continue
         if orphan_only and owner:
+            continue
+        if roles_only and not group.get("role_assignments"):
             continue
         if min_members is not None and members_count < min_members:
             continue
@@ -1828,6 +1970,7 @@ def root():
             "/aad/load-groups": "Alias upload AAD + mapping rôles built-in",
             "/aad/sync-azure": "Synchroniser groupes depuis Azure CLI",
             "/aad/sync-azure/async": "Synchroniser groupes Azure en arrière-plan",
+            "/aad/refresh-assignments/async": "Rafraîchir les assignations RBAC des groupes déjà chargés",
             "/operations": "Lister les opérations arrière-plan",
             "/config/reset": "Réinitialiser vers le dataset mock",
             "/policy": "Lire/mettre à jour la policy gouvernance",
@@ -2211,6 +2354,33 @@ def get_azure_sync_job(job_id: str, request: Request):
     return {"status": "success", "job": job}
 
 
+@app.post("/aad/refresh-assignments/async", summary="Rafraîchir les assignations RBAC des groupes chargés")
+def aad_refresh_assignments_async(
+    request: Request,
+    workers: int = 24,
+    scope_filter: Optional[str] = None,
+    roles_only: bool = False,
+):
+    _require_role(request, ["admin"])
+    job_id = uuid.uuid4().hex
+    _set_sync_job(
+        job_id,
+        type="assignment_refresh",
+        label="Refresh RBAC scopes",
+        status="queued",
+        phase="queued",
+        created_at=datetime.now().isoformat(),
+        progress={"current": 0, "total": 0},
+        params={
+            "workers": workers,
+            "scope_filter": scope_filter or "",
+            "roles_only": roles_only,
+        },
+    )
+    IMPORT_EXECUTOR.submit(_run_assignment_refresh_job, job_id, workers, scope_filter, roles_only)
+    return {"status": "accepted", "job_id": job_id}
+
+
 @app.get("/operations", summary="Lister les opérations arrière-plan")
 def list_operations(request: Request):
     _require_role(request, ["admin", "user"])
@@ -2250,6 +2420,7 @@ def generate_access_matrix(
     scope_filter: Optional[str] = None,
     naming_only: bool = False,
     orphan_only: bool = False,
+    roles_only: bool = False,
     min_members: Optional[int] = None,
     max_members: Optional[int] = None,
     sort_by: str = "display_name",
@@ -2273,6 +2444,7 @@ def generate_access_matrix(
         scope_filter=scope_filter,
         naming_only=naming_only,
         orphan_only=orphan_only,
+        roles_only=roles_only,
         min_members=min_members,
         max_members=max_members,
     )
@@ -2353,6 +2525,7 @@ def generate_access_matrix(
             "scope_filter": scope_filter,
             "naming_only": naming_only,
             "orphan_only": orphan_only,
+            "roles_only": roles_only,
             "min_members": min_members,
             "max_members": max_members,
             "sort_by": sort_by,
@@ -2448,6 +2621,7 @@ def compliance_check(
     scope_filter: Optional[str] = None,
     naming_only: bool = False,
     orphan_only: bool = False,
+    roles_only: bool = False,
     min_members: Optional[int] = None,
     max_members: Optional[int] = None,
     findings_page: int = 1,
@@ -2470,6 +2644,7 @@ def compliance_check(
         scope_filter=scope_filter,
         naming_only=naming_only,
         orphan_only=orphan_only,
+        roles_only=roles_only,
         min_members=min_members,
         max_members=max_members,
     )
@@ -2571,6 +2746,7 @@ def compliance_check(
             "scope_filter": scope_filter,
             "naming_only": naming_only,
             "orphan_only": orphan_only,
+            "roles_only": roles_only,
             "min_members": min_members,
             "max_members": max_members,
             "findings_severity": findings_severity,

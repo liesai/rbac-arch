@@ -143,6 +143,7 @@ export default function App() {
     scope: "",
     namingOnly: false,
     orphanOnly: false,
+    rolesOnly: false,
     minMembers: "",
     maxMembers: "",
   });
@@ -231,6 +232,7 @@ export default function App() {
     if (filters.scope.trim()) params.set("scope_filter", filters.scope.trim());
     if (filters.namingOnly) params.set("naming_only", "true");
     if (filters.orphanOnly) params.set("orphan_only", "true");
+    if (filters.rolesOnly) params.set("roles_only", "true");
     if (filters.minMembers !== "") params.set("min_members", String(Number(filters.minMembers) || 0));
     if (filters.maxMembers !== "") params.set("max_members", String(Number(filters.maxMembers) || 0));
     const query = params.toString();
@@ -327,7 +329,7 @@ export default function App() {
         if (op.type === "import") continue;
         if (op.status === "completed") {
           toast.success(op.message || `${op.label || op.type || "Operation"} terminee`);
-          if (op.type === "azure_sync") {
+          if (["azure_sync", "assignment_refresh"].includes(op.type)) {
             setUploading(false);
             await refreshAll();
           }
@@ -442,6 +444,29 @@ export default function App() {
     }
   }
 
+  async function handleAssignmentRefresh() {
+    setUploading(true);
+    try {
+      const workers = Math.max(1, Math.min(64, Number.parseInt(azureWorkers, 10) || 24));
+      const params = new URLSearchParams({
+        workers: String(workers),
+      });
+      if (filters.scope.trim()) params.set("scope_filter", filters.scope.trim());
+      if (filters.rolesOnly) params.set("roles_only", "true");
+      const res = await fetch(`${apiEndpoint}/aad/refresh-assignments/async?${params.toString()}`, {
+        method: "POST",
+      });
+      const body = await res.json();
+      if (!res.ok) throw new Error(body?.detail || `Refresh failed: ${res.status}`);
+      toast.success("Refresh RBAC lance en arriere-plan");
+      await refreshOperations(false);
+    } catch (err) {
+      toast.error(String(err));
+    } finally {
+      setUploading(false);
+    }
+  }
+
   async function applyOverrideSuggestion(suggestion) {
     const override = suggestion?.suggested_override;
     if (!override?.group_id) return;
@@ -547,15 +572,15 @@ export default function App() {
 
   useEffect(() => {
     setMatrixPage(1);
-  }, [matrixSearch, filters.owner, filters.tag, filters.scope, filters.namingOnly, filters.orphanOnly, filters.minMembers, filters.maxMembers]);
+  }, [matrixSearch, filters.owner, filters.tag, filters.scope, filters.namingOnly, filters.orphanOnly, filters.rolesOnly, filters.minMembers, filters.maxMembers]);
 
   useEffect(() => {
     setFindingsPage(1);
-  }, [riskSearch, riskSeverityFilter, filters.owner, filters.tag, filters.scope, filters.namingOnly, filters.orphanOnly, filters.minMembers, filters.maxMembers]);
+  }, [riskSearch, riskSeverityFilter, filters.owner, filters.tag, filters.scope, filters.namingOnly, filters.orphanOnly, filters.rolesOnly, filters.minMembers, filters.maxMembers]);
 
   useEffect(() => {
     void refreshAll();
-  }, [matrixPage, findingsPage, matrixSearch, riskSearch, riskSeverityFilter, filters.owner, filters.tag, filters.scope, filters.namingOnly, filters.orphanOnly, filters.minMembers, filters.maxMembers]);
+  }, [matrixPage, findingsPage, matrixSearch, riskSearch, riskSeverityFilter, filters.owner, filters.tag, filters.scope, filters.namingOnly, filters.orphanOnly, filters.rolesOnly, filters.minMembers, filters.maxMembers]);
 
   return (
     <div className="dashboard-shell min-h-screen text-slate-900">
@@ -668,6 +693,14 @@ export default function App() {
               Sync Azure
             </button>
             <button
+              onClick={() => void handleAssignmentRefresh()}
+              className={`${CONTROL_CLASS} min-w-[150px]`}
+              disabled={uploading}
+              title="Rafraichit seulement les assignations RBAC des groupes deja charges"
+            >
+              Refresh RBAC
+            </button>
+            <button
               onClick={() => void handleResetConfig()}
               className={`${CONTROL_CLASS} min-w-[120px]`}
               disabled={uploading}
@@ -745,6 +778,14 @@ export default function App() {
               />
               Orphan groups only
             </label>
+            <label className="flex items-center gap-2 text-sm text-slate-700">
+              <input
+                type="checkbox"
+                checked={filters.rolesOnly}
+                onChange={(e) => setFilters((f) => ({ ...f, rolesOnly: e.target.checked }))}
+              />
+              With mapped roles
+            </label>
             <button
               onClick={() => void refreshAll()}
               className="min-h-11 rounded-lg bg-indigo-600 px-4 py-2 text-sm font-medium text-white transition hover:bg-indigo-700"
@@ -759,6 +800,7 @@ export default function App() {
                   scope: "",
                   namingOnly: false,
                   orphanOnly: false,
+                  rolesOnly: false,
                   minMembers: "",
                   maxMembers: "",
                 });
@@ -1321,7 +1363,7 @@ function OperationsPanel({ operations }) {
                       <OperationStatusBadge status={op.status} />
                     </div>
                     <div className="mt-1 truncate text-xs text-slate-500">
-                      {op.phase || "-"}{op.filename ? ` | ${op.filename}` : ""}{op.params?.group_filter ? ` | filtre: ${op.params.group_filter}` : ""}
+                      {op.phase || "-"}{op.filename ? ` | ${op.filename}` : ""}{op.params?.group_filter ? ` | filtre: ${op.params.group_filter}` : ""}{op.params?.scope_filter ? ` | scope: ${op.params.scope_filter}` : ""}
                     </div>
                     {op.error ? <div className="mt-2 text-sm text-red-700">{op.error}</div> : null}
                   </div>
