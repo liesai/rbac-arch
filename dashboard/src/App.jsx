@@ -127,7 +127,9 @@ export default function App() {
   const terminalOperationsRef = useRef(new Set());
   const [riskSearch, setRiskSearch] = useState("");
   const [riskSeverityFilter, setRiskSeverityFilter] = useState("ALL");
+  const [riskSearchInput, setRiskSearchInput] = useState("");
   const [matrixSearch, setMatrixSearch] = useState("");
+  const [matrixSearchInput, setMatrixSearchInput] = useState("");
   const [matrixPage, setMatrixPage] = useState(1);
   const [findingsPage, setFindingsPage] = useState(1);
   const [overrideSearch, setOverrideSearch] = useState("");
@@ -193,6 +195,20 @@ export default function App() {
     }, 2000);
     return () => window.clearInterval(timer);
   }, [route, apiEndpoint]);
+
+  useEffect(() => {
+    const timer = window.setTimeout(() => {
+      setMatrixSearch(matrixSearchInput);
+    }, 350);
+    return () => window.clearTimeout(timer);
+  }, [matrixSearchInput]);
+
+  useEffect(() => {
+    const timer = window.setTimeout(() => {
+      setRiskSearch(riskSearchInput);
+    }, 350);
+    return () => window.clearTimeout(timer);
+  }, [riskSearchInput]);
 
   useEffect(() => {
     function handlePopState() {
@@ -869,8 +885,8 @@ export default function App() {
                   <input
                     className="min-h-11 w-full rounded-lg border border-slate-300 pl-9 pr-3 py-2 text-sm"
                     placeholder="Rechercher un finding, groupe, règle..."
-                    value={riskSearch}
-                    onChange={(e) => setRiskSearch(e.target.value)}
+                    value={riskSearchInput}
+                    onChange={(e) => setRiskSearchInput(e.target.value)}
                   />
                 </label>
                 <select
@@ -1132,8 +1148,8 @@ export default function App() {
                   <input
                     className="min-h-11 w-full rounded-lg border border-slate-300 pl-9 pr-3 py-2 text-sm"
                     placeholder="Rechercher groupe, owner, scope ou role..."
-                    value={matrixSearch}
-                    onChange={(e) => setMatrixSearch(e.target.value)}
+                    value={matrixSearchInput}
+                    onChange={(e) => setMatrixSearchInput(e.target.value)}
                   />
                 </label>
                 <div className="text-sm text-slate-500">
