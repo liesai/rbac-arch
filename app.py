@@ -130,6 +130,8 @@ LAST_CONFIG_UPDATE = datetime.now().isoformat()
 POLICY_PATH = Path(__file__).resolve().parent / "config" / "governance-policy.yaml"
 IMPORT_JOB_LOCK = threading.Lock()
 IMPORT_JOBS: Dict[str, Dict[str, Any]] = {}
+SYNC_JOB_LOCK = threading.Lock()
+SYNC_JOBS: Dict[str, Dict[str, Any]] = {}
 IMPORT_EXECUTOR = ThreadPoolExecutor(max_workers=2)
 
 DEFAULT_POLICY = {
@@ -727,6 +729,43 @@ def _get_import_job(job_id: str) -> Optional[Dict[str, Any]]:
         return job.copy() if job else None
 
 
+def _set_sync_job(job_id: str, **updates: Any) -> Dict[str, Any]:
+    with SYNC_JOB_LOCK:
+        current = SYNC_JOBS.get(job_id, {}).copy()
+        current.update(updates)
+        current["job_id"] = job_id
+        current["type"] = "azure_sync"
+        SYNC_JOBS[job_id] = current
+        return current.copy()
+
+
+def _get_sync_job(job_id: str) -> Optional[Dict[str, Any]]:
+    with SYNC_JOB_LOCK:
+        job = SYNC_JOBS.get(job_id)
+        return job.copy() if job else None
+
+
+def _list_background_operations() -> List[Dict[str, Any]]:
+    operations: List[Dict[str, Any]] = []
+    with IMPORT_JOB_LOCK:
+        for job in IMPORT_JOBS.values():
+            item = job.copy()
+            item.setdefault("type", "import")
+            item.setdefault("label", item.get("filename") or "Import AAD")
+            operations.append(item)
+    with SYNC_JOB_LOCK:
+        for job in SYNC_JOBS.values():
+            item = job.copy()
+            item.setdefault("type", "azure_sync")
+            item.setdefault("label", "Sync Azure")
+            operations.append(item)
+
+    def sort_key(item: Dict[str, Any]) -> str:
+        return str(item.get("created_at") or item.get("started_at") or item.get("completed_at") or "")
+
+    return sorted(operations, key=sort_key, reverse=True)
+
+
 def _apply_imported_groups(valid_groups: List[RBACConfig]) -> None:
     global CURRENT_GROUPS, CURRENT_SOURCE, LAST_CONFIG_UPDATE
     CURRENT_GROUPS = [g.model_dump() for g in valid_groups]
@@ -811,9 +850,220 @@ def _matches_group_filter(row: Dict[str, Any], terms: List[str], match_mode: str
     return False
 
 
+def _sync_azure_groups(
+    max_groups: int = 200,
+    workers: int = 8,
+    group_filter: Optional[str] = None,
+    filter_match: str = "contains",
+    job_id: Optional[str] = None,
+) -> Dict[str, Any]:
+    global CURRENT_GROUPS, CURRENT_SOURCE, LAST_CONFIG_UPDATE
+    if shutil.which("az") is None:
+        raise HTTPException(status_code=503, detail="Azure CLI (az) introuvable sur cette machine.")
+
+    filter_terms = _parse_group_filter_terms(group_filter)
+    normalized_match = str(filter_match or "contains").strip().lower()
+    if normalized_match not in {"contains", "startswith"}:
+        raise HTTPException(status_code=400, detail="filter_match doit être 'contains' ou 'startswith'.")
+
+    filter_expression = _build_group_filter_expression(filter_terms, normalized_match) if filter_terms else ""
+    server_filter_applied = False
+    client_filter_applied = False
+    if job_id:
+        _set_sync_job(
+            job_id,
+            status="running",
+            phase="listing_groups",
+            started_at=datetime.now().isoformat(),
+            progress={"current": 0, "total": 0},
+        )
+
+    try:
+        if filter_expression:
+            try:
+                raw_groups = _run_az_json(["ad", "group", "list", "--filter", filter_expression])
+                server_filter_applied = True
+            except Exception:
+                try:
+                    raw_groups = _run_az_json(["ad", "group", "list", "--all"])
+                except Exception:
+                    raw_groups = _run_az_json(["ad", "group", "list"])
+        else:
+            try:
+                raw_groups = _run_az_json(["ad", "group", "list", "--all"])
+            except Exception:
+                raw_groups = _run_az_json(["ad", "group", "list"])
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Echec récupération groupes Azure: {e}")
+
+    if not isinstance(raw_groups, list):
+        raise HTTPException(status_code=500, detail="Réponse az ad group list invalide.")
+
+    total_groups_returned = len(raw_groups)
+    if filter_terms and not server_filter_applied:
+        raw_groups = [
+            row for row in raw_groups
+            if isinstance(row, dict) and _matches_group_filter(row, filter_terms, normalized_match)
+        ]
+        client_filter_applied = True
+
+    if max_groups > 0:
+        raw_groups = raw_groups[:max_groups]
+
+    if job_id:
+        _set_sync_job(
+            job_id,
+            phase="enriching_groups",
+            candidate_groups=len(raw_groups),
+            progress={"current": 0, "total": len(raw_groups)},
+        )
+
+    def enrich_group(row: Dict[str, Any], idx: int) -> Dict[str, Any]:
+        group_id = str(row.get("id") or f"GROUP_{idx+1:03d}")
+        display_name = str(row.get("displayName") or row.get("name") or group_id)
+
+        try:
+            members_count = int(_run_az_tsv(["ad", "group", "member", "list", "--group", group_id, "--query", "length(@)"]) or 0)
+        except Exception:
+            members_count = 0
+
+        owner = ""
+        try:
+            owners = _run_az_json(["ad", "group", "owner", "list", "--group", group_id, "--query", "[].{upn:userPrincipalName,mail:mail,displayName:displayName}"])
+            if isinstance(owners, list) and owners:
+                top = owners[0] or {}
+                owner = str(top.get("upn") or top.get("mail") or top.get("displayName") or "").strip()
+        except Exception:
+            owner = ""
+
+        role_assignments: List[str] = []
+        scope = "/"
+        try:
+            assignments = _run_az_json(["role", "assignment", "list", "--all", "--assignee-object-id", group_id, "--query", "[].{role:roleDefinitionName,scope:scope}"])
+            if isinstance(assignments, list):
+                scopes = []
+                seen_roles = set()
+                for item in assignments:
+                    role_name = _normalize_role_name(str((item or {}).get("role") or ""))
+                    if role_name and role_name not in seen_roles:
+                        role_assignments.append(role_name)
+                        seen_roles.add(role_name)
+                    s = str((item or {}).get("scope") or "").strip()
+                    if s:
+                        scopes.append(s)
+                if scopes:
+                    scope = min(scopes, key=len)
+        except Exception:
+            pass
+
+        naming_ok = bool(re.match(r"^(AAD-|GRP-)", group_id, flags=re.IGNORECASE))
+        tags = _infer_tags_from_name(display_name)
+
+        return RBACConfig(
+            group_id=group_id,
+            display_name=display_name,
+            members_count=members_count,
+            role_assignments=role_assignments,
+            owner=owner,
+            scope=scope,
+            tags=tags,
+            naming_ok=naming_ok,
+            last_review_days=0,
+        ).model_dump()
+
+    safe_workers = max(1, min(32, workers))
+    enriched: List[Dict[str, Any]] = [None] * len(raw_groups)  # type: ignore
+    completed = 0
+    with ThreadPoolExecutor(max_workers=safe_workers) as pool:
+        future_map = {
+            pool.submit(enrich_group, row, idx): idx
+            for idx, row in enumerate(raw_groups)
+        }
+        for future in as_completed(future_map):
+            idx = future_map[future]
+            try:
+                enriched[idx] = future.result()
+            except Exception:
+                src = raw_groups[idx] or {}
+                enriched[idx] = RBACConfig(
+                    group_id=str(src.get("id") or f"GROUP_{idx+1:03d}"),
+                    display_name=str(src.get("displayName") or src.get("name") or f"GROUP_{idx+1:03d}"),
+                    members_count=0,
+                    role_assignments=[],
+                    owner="",
+                    scope="/",
+                    tags={},
+                    naming_ok=True,
+                    last_review_days=0,
+                ).model_dump()
+            completed += 1
+            if job_id and (completed == len(raw_groups) or completed % 10 == 0):
+                _set_sync_job(
+                    job_id,
+                    progress={"current": completed, "total": len(raw_groups)},
+                    processed_groups=completed,
+                )
+
+    CURRENT_GROUPS = [g for g in enriched if g]
+    CURRENT_SOURCE = "azure_sync"
+    LAST_CONFIG_UPDATE = datetime.now().isoformat()
+    result = {
+        "status": "success",
+        "message": f"Azure sync OK: {len(CURRENT_GROUPS)} groupes",
+        "source": CURRENT_SOURCE,
+        "last_updated": LAST_CONFIG_UPDATE,
+        "total_groups": len(CURRENT_GROUPS),
+        "sync_filter": {
+            "terms": filter_terms,
+            "match": normalized_match,
+            "server_filter_applied": server_filter_applied,
+            "client_filter_applied": client_filter_applied,
+            "total_groups_returned_before_limit": total_groups_returned,
+            "filter_expression": filter_expression,
+        },
+    }
+    if job_id:
+        _set_sync_job(
+            job_id,
+            status="completed",
+            phase="completed",
+            completed_at=datetime.now().isoformat(),
+            source=CURRENT_SOURCE,
+            last_updated=LAST_CONFIG_UPDATE,
+            total_groups=len(CURRENT_GROUPS),
+            progress={"current": len(raw_groups), "total": len(raw_groups)},
+            message=result["message"],
+            sync_filter=result["sync_filter"],
+        )
+    return result
+
+
+def _run_azure_sync_job(job_id: str, max_groups: int, workers: int, group_filter: Optional[str], filter_match: str) -> None:
+    try:
+        _sync_azure_groups(
+            max_groups=max_groups,
+            workers=workers,
+            group_filter=group_filter,
+            filter_match=filter_match,
+            job_id=job_id,
+        )
+    except HTTPException as e:
+        _set_sync_job(job_id, status="failed", phase="failed", completed_at=datetime.now().isoformat(), error=str(e.detail))
+    except Exception as e:
+        _set_sync_job(job_id, status="failed", phase="failed", completed_at=datetime.now().isoformat(), error=str(e))
+
+
 def _run_import_job(job_id: str, file_path: str, file_kind: str) -> None:
     try:
-        _set_import_job(job_id, status="running", started_at=datetime.now().isoformat())
+        _set_import_job(
+            job_id,
+            type="import",
+            label="Import AAD",
+            status="running",
+            phase="parsing",
+            progress={"current": 0, "total": 0},
+            started_at=datetime.now().isoformat(),
+        )
         if file_kind == "json":
             with open(file_path, "rb") as fh:
                 payload = json.loads(fh.read().decode("utf-8", errors="ignore"))
@@ -822,15 +1072,22 @@ def _run_import_job(job_id: str, file_path: str, file_kind: str) -> None:
             with open(file_path, "r", encoding="utf-8", errors="ignore", newline="") as fh:
                 groups = _parse_csv_stream(fh)
 
+        _set_import_job(
+            job_id,
+            phase="validating",
+            progress={"current": len(groups), "total": len(groups)},
+        )
         valid_groups = _validate_imported_groups(groups)
         _apply_imported_groups(valid_groups)
         _set_import_job(
             job_id,
             status="completed",
+            phase="completed",
             completed_at=datetime.now().isoformat(),
             source=CURRENT_SOURCE,
             last_updated=LAST_CONFIG_UPDATE,
             total_groups=len(CURRENT_GROUPS),
+            progress={"current": len(CURRENT_GROUPS), "total": len(CURRENT_GROUPS)},
             message=f"{len(valid_groups)} groupes importés et mappés",
         )
     except HTTPException as e:
@@ -1517,6 +1774,8 @@ def root():
             "/upload-config": "Import de votre fichier CSV/JSON AD",
             "/aad/load-groups": "Alias upload AAD + mapping rôles built-in",
             "/aad/sync-azure": "Synchroniser groupes depuis Azure CLI",
+            "/aad/sync-azure/async": "Synchroniser groupes Azure en arrière-plan",
+            "/operations": "Lister les opérations arrière-plan",
             "/config/reset": "Réinitialiser vers le dataset mock",
             "/policy": "Lire/mettre à jour la policy gouvernance",
             "/policy/domains": "Lister domaines et variables de naming",
@@ -1806,10 +2065,13 @@ async def upload_config_async(request: Request, file: UploadFile = File(...)):
     job_id = uuid.uuid4().hex
     _set_import_job(
         job_id,
+        type="import",
+        label="Import AAD",
         status="queued",
         created_at=datetime.now().isoformat(),
         filename=file.filename or "",
         file_kind=file_kind,
+        progress={"current": 0, "total": 0},
     )
     IMPORT_EXECUTOR.submit(_run_import_job, job_id, file_path, file_kind)
     return {"status": "accepted", "job_id": job_id}
@@ -1843,147 +2105,68 @@ def aad_sync_azure(
     ou pipe. Exemple: group_filter=PDM,IA&filter_match=contains.
     """
     _require_role(request, ["admin"])
-    global CURRENT_GROUPS, CURRENT_SOURCE, LAST_CONFIG_UPDATE
-    if shutil.which("az") is None:
-        raise HTTPException(status_code=503, detail="Azure CLI (az) introuvable sur cette machine.")
+    return _sync_azure_groups(
+        max_groups=max_groups,
+        workers=workers,
+        group_filter=group_filter,
+        filter_match=filter_match,
+    )
 
+
+@app.post("/aad/sync-azure/async", summary="Synchroniser la configuration Azure CLI en arrière-plan")
+def aad_sync_azure_async(
+    request: Request,
+    max_groups: int = 200,
+    workers: int = 8,
+    group_filter: Optional[str] = None,
+    filter_match: str = "contains",
+):
+    _require_role(request, ["admin"])
     filter_terms = _parse_group_filter_terms(group_filter)
     normalized_match = str(filter_match or "contains").strip().lower()
     if normalized_match not in {"contains", "startswith"}:
         raise HTTPException(status_code=400, detail="filter_match doit être 'contains' ou 'startswith'.")
-
-    filter_expression = _build_group_filter_expression(filter_terms, normalized_match) if filter_terms else ""
-    server_filter_applied = False
-    client_filter_applied = False
-
-    try:
-        if filter_expression:
-            try:
-                raw_groups = _run_az_json(["ad", "group", "list", "--filter", filter_expression])
-                server_filter_applied = True
-            except Exception:
-                try:
-                    raw_groups = _run_az_json(["ad", "group", "list", "--all"])
-                except Exception:
-                    raw_groups = _run_az_json(["ad", "group", "list"])
-        else:
-            try:
-                raw_groups = _run_az_json(["ad", "group", "list", "--all"])
-            except Exception:
-                raw_groups = _run_az_json(["ad", "group", "list"])
-    except Exception as e:
-        raise HTTPException(status_code=500, detail=f"Echec récupération groupes Azure: {e}")
-
-    if not isinstance(raw_groups, list):
-        raise HTTPException(status_code=500, detail="Réponse az ad group list invalide.")
-
-    total_groups_returned = len(raw_groups)
-    if filter_terms and not server_filter_applied:
-        raw_groups = [
-            row for row in raw_groups
-            if isinstance(row, dict) and _matches_group_filter(row, filter_terms, normalized_match)
-        ]
-        client_filter_applied = True
-
-    if max_groups > 0:
-        raw_groups = raw_groups[:max_groups]
-
-    def enrich_group(row: Dict[str, Any], idx: int) -> Dict[str, Any]:
-        group_id = str(row.get("id") or f"GROUP_{idx+1:03d}")
-        display_name = str(row.get("displayName") or row.get("name") or group_id)
-
-        try:
-            members_count = int(_run_az_tsv(["ad", "group", "member", "list", "--group", group_id, "--query", "length(@)"]) or 0)
-        except Exception:
-            members_count = 0
-
-        owner = ""
-        try:
-            owners = _run_az_json(["ad", "group", "owner", "list", "--group", group_id, "--query", "[].{upn:userPrincipalName,mail:mail,displayName:displayName}"])
-            if isinstance(owners, list) and owners:
-                top = owners[0] or {}
-                owner = str(top.get("upn") or top.get("mail") or top.get("displayName") or "").strip()
-        except Exception:
-            owner = ""
-
-        role_assignments: List[str] = []
-        scope = "/"
-        try:
-            assignments = _run_az_json(["role", "assignment", "list", "--all", "--assignee-object-id", group_id, "--query", "[].{role:roleDefinitionName,scope:scope}"])
-            if isinstance(assignments, list):
-                scopes = []
-                seen_roles = set()
-                for item in assignments:
-                    role_name = _normalize_role_name(str((item or {}).get("role") or ""))
-                    if role_name and role_name not in seen_roles:
-                        role_assignments.append(role_name)
-                        seen_roles.add(role_name)
-                    s = str((item or {}).get("scope") or "").strip()
-                    if s:
-                        scopes.append(s)
-                if scopes:
-                    scope = min(scopes, key=len)
-        except Exception:
-            pass
-
-        naming_ok = bool(re.match(r"^(AAD-|GRP-)", group_id, flags=re.IGNORECASE))
-        tags = _infer_tags_from_name(display_name)
-
-        return RBACConfig(
-            group_id=group_id,
-            display_name=display_name,
-            members_count=members_count,
-            role_assignments=role_assignments,
-            owner=owner,
-            scope=scope,
-            tags=tags,
-            naming_ok=naming_ok,
-            last_review_days=0,
-        ).model_dump()
-
-    safe_workers = max(1, min(32, workers))
-    enriched: List[Dict[str, Any]] = [None] * len(raw_groups)  # type: ignore
-    with ThreadPoolExecutor(max_workers=safe_workers) as pool:
-        future_map = {
-            pool.submit(enrich_group, row, idx): idx
-            for idx, row in enumerate(raw_groups)
-        }
-        for future in as_completed(future_map):
-            idx = future_map[future]
-            try:
-                enriched[idx] = future.result()
-            except Exception:
-                # fallback minimal row if one group fails
-                src = raw_groups[idx] or {}
-                enriched[idx] = RBACConfig(
-                    group_id=str(src.get("id") or f"GROUP_{idx+1:03d}"),
-                    display_name=str(src.get("displayName") or src.get("name") or f"GROUP_{idx+1:03d}"),
-                    members_count=0,
-                    role_assignments=[],
-                    owner="",
-                    scope="/",
-                    tags={},
-                    naming_ok=True,
-                    last_review_days=0,
-                ).model_dump()
-
-    CURRENT_GROUPS = [g for g in enriched if g]
-    CURRENT_SOURCE = "azure_sync"
-    LAST_CONFIG_UPDATE = datetime.now().isoformat()
-    return {
-        "status": "success",
-        "message": f"Azure sync OK: {len(CURRENT_GROUPS)} groupes",
-        "source": CURRENT_SOURCE,
-        "last_updated": LAST_CONFIG_UPDATE,
-        "total_groups": len(CURRENT_GROUPS),
-        "sync_filter": {
+    job_id = uuid.uuid4().hex
+    _set_sync_job(
+        job_id,
+        label="Sync Azure",
+        status="queued",
+        phase="queued",
+        created_at=datetime.now().isoformat(),
+        progress={"current": 0, "total": 0},
+        params={
+            "max_groups": max_groups,
+            "workers": workers,
+            "group_filter": group_filter or "",
+            "filter_match": normalized_match,
+        },
+        sync_filter={
             "terms": filter_terms,
             "match": normalized_match,
-            "server_filter_applied": server_filter_applied,
-            "client_filter_applied": client_filter_applied,
-            "total_groups_returned_before_limit": total_groups_returned,
-            "filter_expression": filter_expression,
         },
+    )
+    IMPORT_EXECUTOR.submit(_run_azure_sync_job, job_id, max_groups, workers, group_filter, normalized_match)
+    return {"status": "accepted", "job_id": job_id}
+
+
+@app.get("/aad/sync-azure/jobs/{job_id}", summary="Statut d'une synchronisation Azure")
+def get_azure_sync_job(job_id: str, request: Request):
+    _require_role(request, ["admin", "user"])
+    job = _get_sync_job(job_id)
+    if not job:
+        raise HTTPException(status_code=404, detail="Job de synchronisation introuvable")
+    return {"status": "success", "job": job}
+
+
+@app.get("/operations", summary="Lister les opérations arrière-plan")
+def list_operations(request: Request):
+    _require_role(request, ["admin", "user"])
+    operations = _list_background_operations()
+    active = [op for op in operations if op.get("status") in {"queued", "running"}]
+    return {
+        "status": "success",
+        "operations": operations[:50],
+        "active_count": len(active),
     }
 
 

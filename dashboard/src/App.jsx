@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 import {
   ResponsiveContainer,
   PieChart,
@@ -12,7 +12,7 @@ import {
   YAxis,
   CartesianGrid,
 } from "recharts";
-import { Shield, Users, Server, Activity, CheckCircle2, XCircle, Download, Wand2, Check, Settings, LayoutDashboard, Save, Search, ChevronLeft, ChevronRight, Plus, Trash2 } from "lucide-react";
+import { Shield, Users, Server, Activity, CheckCircle2, XCircle, Download, Wand2, Check, Settings, LayoutDashboard, Save, Search, ChevronLeft, ChevronRight, Plus, Trash2, Loader2 } from "lucide-react";
 import toast, { Toaster } from "react-hot-toast";
 
 const COLORS = ["#153a5b", "#0f8b8d", "#d9822b", "#d95d7a", "#6d8299"];
@@ -122,6 +122,8 @@ export default function App() {
   const [overrideSuggestions, setOverrideSuggestions] = useState([]);
   const [catalogLoading, setCatalogLoading] = useState(false);
   const [applyingOverrideId, setApplyingOverrideId] = useState("");
+  const [operations, setOperations] = useState([]);
+  const terminalOperationsRef = useRef(new Set());
   const [riskSearch, setRiskSearch] = useState("");
   const [riskSeverityFilter, setRiskSeverityFilter] = useState("ALL");
   const [matrixSearch, setMatrixSearch] = useState("");
@@ -142,6 +144,7 @@ export default function App() {
 
   useEffect(() => {
     void refreshAll();
+    void refreshOperations(false);
   }, []);
 
   useEffect(() => {
@@ -179,6 +182,14 @@ export default function App() {
 
     return () => window.clearInterval(timer);
   }, [apiEndpoint, importJob?.job_id, importJob?.status]);
+
+  useEffect(() => {
+    if (route !== "dashboard") return undefined;
+    const timer = window.setInterval(() => {
+      void refreshOperations(true);
+    }, 2000);
+    return () => window.clearInterval(timer);
+  }, [route, apiEndpoint]);
 
   useEffect(() => {
     function handlePopState() {
@@ -272,6 +283,44 @@ export default function App() {
     }
   }
 
+  async function refreshOperations(announceTerminal = true) {
+    try {
+      const res = await fetch(`${apiEndpoint}/operations`);
+      if (!res.ok) return;
+      const body = await res.json();
+      const nextOperations = Array.isArray(body?.operations) ? body.operations : [];
+      setOperations(nextOperations);
+
+      if (!announceTerminal) {
+        nextOperations.forEach((op) => {
+          if (op?.job_id && ["completed", "failed"].includes(op.status)) {
+            terminalOperationsRef.current.add(op.job_id);
+          }
+        });
+        return;
+      }
+
+      for (const op of nextOperations) {
+        if (!op?.job_id || !["completed", "failed"].includes(op.status)) continue;
+        if (terminalOperationsRef.current.has(op.job_id)) continue;
+        terminalOperationsRef.current.add(op.job_id);
+        if (op.type === "import") continue;
+        if (op.status === "completed") {
+          toast.success(op.message || `${op.label || op.type || "Operation"} terminee`);
+          if (op.type === "azure_sync") {
+            setUploading(false);
+            await refreshAll();
+          }
+        } else {
+          setUploading(false);
+          toast.error(op.error || `${op.label || op.type || "Operation"} echouee`);
+        }
+      }
+    } catch {
+      // Keep dashboard polling quiet when the API is temporarily unavailable.
+    }
+  }
+
   async function refreshOverrideSuggestions() {
     setCatalogLoading(true);
     try {
@@ -316,6 +365,7 @@ export default function App() {
         startedAsync = true;
         setImportJob({ job_id: payload.job_id, status: "queued" });
         toast.success("Import lance en arriere-plan");
+        await refreshOperations(false);
       } else {
         toast.success(payload?.message || "Import AAD reussi");
         setImportJob(null);
@@ -356,13 +406,13 @@ export default function App() {
         params.set("group_filter", azureGroupFilter.trim());
         params.set("filter_match", "contains");
       }
-      const res = await fetch(`${apiEndpoint}/aad/sync-azure?${params.toString()}`, {
+      const res = await fetch(`${apiEndpoint}/aad/sync-azure/async?${params.toString()}`, {
         method: "POST",
       });
       const body = await res.json();
       if (!res.ok) throw new Error(body?.detail || `Sync failed: ${res.status}`);
-      toast.success(body?.message || "Azure sync done");
-      await refreshAll();
+      toast.success("Sync Azure lancee en arriere-plan");
+      await refreshOperations(false);
     } catch (err) {
       toast.error(String(err));
     } finally {
@@ -444,6 +494,11 @@ export default function App() {
 
   const filteredFindings = findingsData;
   const matrixVisible = matrixData;
+  const activeOperations = useMemo(
+    () => operations.filter((op) => ["queued", "running"].includes(op.status)),
+    [operations],
+  );
+  const recentOperations = useMemo(() => operations.slice(0, 6), [operations]);
 
   const filteredOverrideSuggestions = useMemo(() => {
     return overrideSuggestions.filter((suggestion) => {
@@ -518,6 +573,12 @@ export default function App() {
             <span className="rounded-full bg-slate-900 px-3 py-1.5 text-xs font-semibold tracking-wide text-white">
               Source: {configSource}
             </span>
+            {activeOperations.length ? (
+              <span className="inline-flex items-center gap-2 rounded-full bg-amber-100 px-3 py-1.5 text-xs font-semibold tracking-wide text-amber-800">
+                <Loader2 className="h-3.5 w-3.5 animate-spin" />
+                Ops: {activeOperations.length}
+              </span>
+            ) : null}
             {importJob?.job_id ? (
               <span className={`rounded-full px-3 py-1.5 text-xs font-semibold tracking-wide ${
                 importJob.status === "failed"
@@ -665,6 +726,8 @@ export default function App() {
             </button>
           </div>
         </Card>
+
+        <OperationsPanel operations={recentOperations} />
 
         <section className="grid grid-cols-1 gap-4 md:grid-cols-2 xl:grid-cols-5">
           <StatCard title="Total groups" value={totalGroups} icon={Users} />
@@ -1154,6 +1217,74 @@ function StatCard({ title, value, icon: Icon, danger = false }) {
       </div>
       <div className={`text-3xl font-bold ${danger ? "text-red-700" : "text-slate-900"}`}>{value}</div>
     </div>
+  );
+}
+
+function OperationStatusBadge({ status }) {
+  const normalized = String(status || "unknown").toLowerCase();
+  const tone = normalized === "failed"
+    ? "bg-red-100 text-red-700"
+    : normalized === "completed"
+      ? "bg-emerald-100 text-emerald-700"
+      : normalized === "running"
+        ? "bg-amber-100 text-amber-800"
+        : "bg-slate-100 text-slate-700";
+  return (
+    <span className={`inline-flex min-w-[90px] items-center justify-center rounded-full px-2.5 py-1 text-xs font-semibold ${tone}`}>
+      {normalized}
+    </span>
+  );
+}
+
+function OperationsPanel({ operations }) {
+  const rows = Array.isArray(operations) ? operations : [];
+  return (
+    <Card title="Operations">
+      {rows.length === 0 ? (
+        <div className="rounded-xl border border-dashed border-slate-300 bg-white/60 px-4 py-5 text-sm text-slate-500">
+          Aucune operation enregistree.
+        </div>
+      ) : (
+        <div className="space-y-3">
+          {rows.map((op) => {
+            const progress = op.progress || {};
+            const current = Number(progress.current || 0);
+            const total = Number(progress.total || 0);
+            const pct = total > 0 ? Math.min(100, Math.round((current / total) * 100)) : 0;
+            const isActive = ["queued", "running"].includes(op.status);
+            return (
+              <div key={op.job_id} className="rounded-xl border border-slate-200 bg-white/80 px-4 py-3">
+                <div className="flex flex-col gap-3 lg:flex-row lg:items-center lg:justify-between">
+                  <div className="min-w-0">
+                    <div className="flex flex-wrap items-center gap-2">
+                      {isActive ? <Loader2 className="h-4 w-4 animate-spin text-amber-700" /> : null}
+                      <span className="font-semibold text-slate-900">{op.label || op.type || "Operation"}</span>
+                      <OperationStatusBadge status={op.status} />
+                    </div>
+                    <div className="mt-1 truncate text-xs text-slate-500">
+                      {op.phase || "-"}{op.filename ? ` | ${op.filename}` : ""}{op.params?.group_filter ? ` | filtre: ${op.params.group_filter}` : ""}
+                    </div>
+                    {op.error ? <div className="mt-2 text-sm text-red-700">{op.error}</div> : null}
+                  </div>
+                  <div className="w-full lg:w-72">
+                    <div className="mb-1 flex justify-between text-xs text-slate-500">
+                      <span>{total > 0 ? `${current}/${total}` : op.total_groups ? `${op.total_groups} groupes` : "en attente"}</span>
+                      <span>{total > 0 ? `${pct}%` : ""}</span>
+                    </div>
+                    <div className="h-2 overflow-hidden rounded-full bg-slate-200">
+                      <div
+                        className={`h-full rounded-full ${op.status === "failed" ? "bg-red-500" : "bg-cyan-700"}`}
+                        style={{ width: `${total > 0 ? pct : isActive ? 30 : 100}%` }}
+                      />
+                    </div>
+                  </div>
+                </div>
+              </div>
+            );
+          })}
+        </div>
+      )}
+    </Card>
   );
 }
 

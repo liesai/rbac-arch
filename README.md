@@ -252,6 +252,8 @@ Direction actuelle de l’UI :
 - `POST /upload-config`
 - `POST /aad/load-groups`
 - `POST /aad/sync-azure`
+- `POST /aad/sync-azure/async`
+- `GET /operations`
 - `POST /config/reset`
 
 Exemple de synchronisation Azure limitée aux groupes dont la nomenclature contient `PDM` ou `IA` :
@@ -261,6 +263,13 @@ curl -X POST "http://127.0.0.1:8110/aad/sync-azure?group_filter=PDM,IA&filter_ma
 ```
 
 `group_filter` accepte plusieurs termes séparés par virgule, point-virgule ou pipe. `filter_match` accepte `contains` ou `startswith`.
+
+La variante asynchrone retourne un `job_id` et l'avancement est visible via `GET /operations` :
+
+```bash
+curl -X POST "http://127.0.0.1:8110/aad/sync-azure/async?group_filter=PDM,IA&filter_match=contains&max_groups=500&workers=12"
+curl "http://127.0.0.1:8110/operations"
+```
 
 ### Policy et gouvernance
 
