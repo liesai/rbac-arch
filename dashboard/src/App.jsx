@@ -35,6 +35,7 @@ function normalizeMatrix(response) {
       scope: row.scope || "/",
       tags: row.tags || {},
       naming_ok: Boolean(row.naming_ok ?? true),
+      assignment_details: Array.isArray(row.assignment_details) ? row.assignment_details : [],
       roles: roles
         .map((role) => ({
           name: role?.role ?? role?.name ?? String(role ?? "").trim(),
@@ -235,6 +236,7 @@ export default function App() {
       findingsQuery.set("findings_page", String(findingsPage));
       findingsQuery.set("findings_page_size", "25");
       findingsQuery.set("findings_severity", riskSeverityFilter);
+      findingsQuery.set("detail_group_limit", "500");
       const [matrixResult, riskResult, configResult] = await Promise.allSettled([
         fetch(`${apiEndpoint}/generate-matrix?${query.toString()}`, {
           method: "POST",
@@ -1147,6 +1149,7 @@ export default function App() {
                     <th className="px-3 py-2">Owner</th>
                     <th className="px-3 py-2">Members</th>
                     <th className="px-3 py-2">Roles</th>
+                    <th className="px-3 py-2">Assignments</th>
                     <th className="px-3 py-2 text-center">Data Access</th>
                   </tr>
                 </thead>
@@ -1189,6 +1192,20 @@ export default function App() {
                             </span>
                           )}
                         </div>
+                      </td>
+                      <td className="px-3 py-3">
+                        {group.assignment_details.length ? (
+                          <div className="max-h-32 space-y-1 overflow-y-auto pr-1">
+                            {group.assignment_details.map((assignment, idx) => (
+                              <div key={`${group.group_id}-assignment-${idx}`} className="rounded bg-slate-50 px-2 py-1 text-xs text-slate-700">
+                                <div className="font-medium">{assignment.role || assignment.roleDefinitionName || "Role"}</div>
+                                <div className="truncate text-slate-500" title={assignment.scope || ""}>{assignment.scope || "/"}</div>
+                              </div>
+                            ))}
+                          </div>
+                        ) : (
+                          <span className="text-xs text-slate-400">Roles agreges uniquement</span>
+                        )}
                       </td>
                       <td className="px-3 py-3 text-center">
                         {group.roles.some((r) => r.data_access) ? (

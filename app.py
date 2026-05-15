@@ -249,6 +249,7 @@ class RBACConfig(BaseModel):
     display_name: str
     members_count: int
     role_assignments: List[str]
+    assignment_details: List[Dict[str, str]] = Field(default_factory=list)
     owner: str = ""
     scope: str = "/"
     tags: Dict[str, str] = Field(default_factory=dict)
@@ -591,6 +592,33 @@ def _extract_role_assignments(value: Any) -> List[str]:
     return []
 
 
+def _extract_assignment_details(value: Any) -> List[Dict[str, str]]:
+    if not isinstance(value, list):
+        return []
+    details: List[Dict[str, str]] = []
+    for item in value:
+        if not isinstance(item, dict):
+            continue
+        role_name = (
+            item.get("role")
+            or item.get("role_name")
+            or item.get("roleDefinitionName")
+            or item.get("displayName")
+            or item.get("name")
+            or item.get("builtinRole")
+        )
+        if not role_name:
+            continue
+        detail = {
+            "role": _normalize_role_name(str(role_name)),
+            "scope": str(item.get("scope") or item.get("scope_id") or item.get("scopeId") or ""),
+            "subscription_id": str(item.get("subscription_id") or item.get("subscriptionId") or ""),
+            "subscription_name": str(item.get("subscription_name") or item.get("subscriptionName") or ""),
+        }
+        details.append({k: v for k, v in detail.items() if v})
+    return details
+
+
 def _normalize_role_map(raw_role_map: Any) -> Dict[str, str]:
     if not isinstance(raw_role_map, dict):
         return {}
@@ -639,6 +667,14 @@ def _normalize_group_row(row: Dict[str, Any], role_map: Optional[Dict[str, str]]
         if canonical and canonical not in seen:
             normalized_roles.append(canonical)
             seen.add(canonical)
+
+    assignment_details = _extract_assignment_details(row.get("assignment_details") or row.get("assignments") or row.get("roleAssignments"))
+    if assignment_details:
+        for detail in assignment_details:
+            role = _normalize_role_name(detail.get("role", ""), role_map=role_map)
+            if role and role not in seen:
+                normalized_roles.append(role)
+                seen.add(role)
 
     owner = str(
         row.get("owner")
@@ -689,6 +725,7 @@ def _normalize_group_row(row: Dict[str, Any], role_map: Optional[Dict[str, str]]
         display_name=display_name,
         members_count=members_count,
         role_assignments=normalized_roles,
+        assignment_details=assignment_details,
         owner=owner,
         scope=scope,
         tags=tags,
@@ -946,6 +983,7 @@ def _sync_azure_groups(
             owner = ""
 
         role_assignments: List[str] = []
+        assignment_details: List[Dict[str, str]] = []
         scope = "/"
         try:
             assignments = _run_az_json(["role", "assignment", "list", "--all", "--assignee-object-id", group_id, "--query", "[].{role:roleDefinitionName,scope:scope}"])
@@ -958,6 +996,11 @@ def _sync_azure_groups(
                         role_assignments.append(role_name)
                         seen_roles.add(role_name)
                     s = str((item or {}).get("scope") or "").strip()
+                    if role_name:
+                        assignment_details.append({
+                            "role": role_name,
+                            "scope": s,
+                        })
                     if s:
                         scopes.append(s)
                 if scopes:
@@ -973,6 +1016,7 @@ def _sync_azure_groups(
             display_name=display_name,
             members_count=members_count,
             role_assignments=role_assignments,
+            assignment_details=assignment_details,
             owner=owner,
             scope=scope,
             tags=tags,
@@ -2236,6 +2280,8 @@ def generate_access_matrix(
     sorted_groups = _sort_groups(selected_groups, sort_by=sort_by, sort_dir=sort_dir)
     paged = _paginate_list(sorted_groups, page=page, page_size=page_size)
     paged_groups = paged["items"]
+    summary_scope = sorted_groups[:5000]
+    summary_truncated = len(sorted_groups) > len(summary_scope)
 
     # Construction de la matrice
     matrix = {
@@ -2260,6 +2306,7 @@ def generate_access_matrix(
             "naming_ok": group.get("naming_ok", True),
             "last_review_days": group.get("last_review_days", 0),
             "roles_assigned": [],
+            "assignment_details": group.get("assignment_details", []),
         }
         
         # Pour chaque rôle assigné
@@ -2284,17 +2331,21 @@ def generate_access_matrix(
             "display_name": g["display_name"],
             **_group_risk_score(g),
         }
-        for g in sorted_groups
+        for g in summary_scope
     ]
     top_risks = sorted(scored_groups, key=lambda r: r["score"], reverse=True)[:5]
     matrix["summary"] = {
         "total_groups_analyzed": len(sorted_groups),
         "total_groups_before_filter": len(groups),
         "unique_roles_assigned": list(set(
-            role for g in sorted_groups for role in g["role_assignments"]
+            role for g in summary_scope for role in g["role_assignments"]
         )),
-        "privilege_risks": count_privilege_risks({"groups": sorted_groups}, matrix),
+        "privilege_risks": count_privilege_risks({"groups": summary_scope}, matrix),
         "top_risks": top_risks,
+        "summary_scope": {
+            "groups_summarized": len(summary_scope),
+            "truncated": summary_truncated,
+        },
         "applied_filters": {
             "search": search,
             "owner_filter": owner_filter,
@@ -2402,6 +2453,7 @@ def compliance_check(
     findings_page: int = 1,
     findings_page_size: int = 50,
     findings_severity: str = "ALL",
+    detail_group_limit: int = 500,
 ):
     """
     Analyse les groupes pour détecter:
@@ -2428,7 +2480,7 @@ def compliance_check(
     recommendations = []
     findings = []
     governance_context = []
-    detail_group_limit = 5000
+    detail_group_limit = max(50, min(5000, int(detail_group_limit or 500)))
     detail_limited = len(selected_groups) > detail_group_limit
     detailed_groups = selected_groups[:detail_group_limit] if detail_limited else selected_groups
     
