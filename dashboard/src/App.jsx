@@ -132,6 +132,8 @@ export default function App() {
   const [overrideSearch, setOverrideSearch] = useState("");
   const [overrideConfidenceFilter, setOverrideConfidenceFilter] = useState("ALL");
   const [azureGroupFilter, setAzureGroupFilter] = useState("");
+  const [azureMaxGroups, setAzureMaxGroups] = useState("5000");
+  const [azureWorkers, setAzureWorkers] = useState("24");
   const [filters, setFilters] = useState({
     owner: "",
     tag: "",
@@ -398,9 +400,11 @@ export default function App() {
   async function handleAzureSync() {
     setUploading(true);
     try {
+      const maxGroups = Math.max(0, Number.parseInt(azureMaxGroups, 10) || 0);
+      const workers = Math.max(1, Math.min(64, Number.parseInt(azureWorkers, 10) || 24));
       const params = new URLSearchParams({
-        max_groups: "500",
-        workers: "12",
+        max_groups: String(maxGroups),
+        workers: String(workers),
       });
       if (azureGroupFilter.trim()) {
         params.set("group_filter", azureGroupFilter.trim());
@@ -614,6 +618,28 @@ export default function App() {
               onChange={(e) => setAzureGroupFilter(e.target.value)}
               className={`${CONTROL_CLASS} min-w-[180px] max-w-[240px]`}
               placeholder="Filtre sync: PDM,IA"
+              disabled={uploading}
+            />
+            <input
+              type="number"
+              min="0"
+              step="100"
+              value={azureMaxGroups}
+              onChange={(e) => setAzureMaxGroups(e.target.value)}
+              className={`${CONTROL_CLASS} w-28`}
+              placeholder="Max"
+              title="0 = pas de limite"
+              disabled={uploading}
+            />
+            <input
+              type="number"
+              min="1"
+              max="64"
+              value={azureWorkers}
+              onChange={(e) => setAzureWorkers(e.target.value)}
+              className={`${CONTROL_CLASS} w-24`}
+              placeholder="Workers"
+              title="Workers sync Azure"
               disabled={uploading}
             />
             <button

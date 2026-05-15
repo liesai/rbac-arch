@@ -851,8 +851,8 @@ def _matches_group_filter(row: Dict[str, Any], terms: List[str], match_mode: str
 
 
 def _sync_azure_groups(
-    max_groups: int = 200,
-    workers: int = 8,
+    max_groups: int = 5000,
+    workers: int = 24,
     group_filter: Optional[str] = None,
     filter_match: str = "contains",
     job_id: Optional[str] = None,
@@ -906,6 +906,15 @@ def _sync_azure_groups(
             if isinstance(row, dict) and _matches_group_filter(row, filter_terms, normalized_match)
         ]
         client_filter_applied = True
+
+    try:
+        max_groups = int(max_groups or 0)
+    except Exception:
+        max_groups = 5000
+    try:
+        workers = int(workers or 24)
+    except Exception:
+        workers = 24
 
     if max_groups > 0:
         raw_groups = raw_groups[:max_groups]
@@ -971,7 +980,7 @@ def _sync_azure_groups(
             last_review_days=0,
         ).model_dump()
 
-    safe_workers = max(1, min(32, workers))
+    safe_workers = max(1, min(64, workers))
     enriched: List[Dict[str, Any]] = [None] * len(raw_groups)  # type: ignore
     completed = 0
     with ThreadPoolExecutor(max_workers=safe_workers) as pool:
@@ -2089,8 +2098,8 @@ def get_upload_job(job_id: str, request: Request):
 @app.post("/aad/sync-azure", summary="Synchroniser la configuration depuis Azure CLI")
 def aad_sync_azure(
     request: Request,
-    max_groups: int = 200,
-    workers: int = 8,
+    max_groups: int = 5000,
+    workers: int = 24,
     group_filter: Optional[str] = None,
     filter_match: str = "contains",
 ):
@@ -2116,8 +2125,8 @@ def aad_sync_azure(
 @app.post("/aad/sync-azure/async", summary="Synchroniser la configuration Azure CLI en arrière-plan")
 def aad_sync_azure_async(
     request: Request,
-    max_groups: int = 200,
-    workers: int = 8,
+    max_groups: int = 5000,
+    workers: int = 24,
     group_filter: Optional[str] = None,
     filter_match: str = "contains",
 ):

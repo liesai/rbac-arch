@@ -259,7 +259,7 @@ Direction actuelle de l’UI :
 Exemple de synchronisation Azure limitée aux groupes dont la nomenclature contient `PDM` ou `IA` :
 
 ```bash
-curl -X POST "http://127.0.0.1:8110/aad/sync-azure?group_filter=PDM,IA&filter_match=contains&max_groups=500&workers=12"
+curl -X POST "http://127.0.0.1:8110/aad/sync-azure?group_filter=PDM,IA&filter_match=contains&max_groups=5000&workers=24"
 ```
 
 `group_filter` accepte plusieurs termes séparés par virgule, point-virgule ou pipe. `filter_match` accepte `contains` ou `startswith`.
@@ -267,9 +267,11 @@ curl -X POST "http://127.0.0.1:8110/aad/sync-azure?group_filter=PDM,IA&filter_ma
 La variante asynchrone retourne un `job_id` et l'avancement est visible via `GET /operations` :
 
 ```bash
-curl -X POST "http://127.0.0.1:8110/aad/sync-azure/async?group_filter=PDM,IA&filter_match=contains&max_groups=500&workers=12"
+curl -X POST "http://127.0.0.1:8110/aad/sync-azure/async?group_filter=PDM,IA&filter_match=contains&max_groups=5000&workers=24"
 curl "http://127.0.0.1:8110/operations"
 ```
+
+`max_groups=0` désactive la limite. `workers` est plafonné à `64` côté API pour éviter une saturation locale ou un throttling Azure trop agressif.
 
 ### Policy et gouvernance
 
